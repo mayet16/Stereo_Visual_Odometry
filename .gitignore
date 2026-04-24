@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+.claude/
+
+# OS junk
+.DS_Store
+
+# Build/output
+outputs/
+build/
+dist/
+
+tumvi_dataset/
+reference papers/
+reports/
+
+# Data
+*.zip
+*.bag
+*.npy
+*.npz
+*.pth
+*.pt
