@@ -169,6 +169,66 @@ def start_end_drift(
     return float(np.linalg.norm(est_end_aligned[:3, 3] - gt[-1][:3, 3]))
 
 
+# ── distance-based RPE (spec: d=100 m segments) ───────────────────────────────
+
+def rpe_distance_based(
+    est:         List[np.ndarray],
+    gt:          List[np.ndarray],
+    target_dist: float = 100.0,
+) -> Dict:
+    """
+    RPE over segments whose path length ≈ target_dist metres.
+    For each frame i, finds j so that the estimated trajectory
+    travels target_dist metres from i to j, then computes the
+    relative-pose error against the matching GT segment.
+
+    Returns nan metrics (with n_segments=0) when the total trajectory
+    is shorter than target_dist (e.g. room2 ~15 m < 100 m).
+    """
+    n = len(est)
+    step_lengths = np.zeros(n)
+    for i in range(1, n):
+        step_lengths[i] = np.linalg.norm(est[i][:3, 3] - est[i-1][:3, 3])
+    cumulative = np.cumsum(step_lengths)
+    total_dist = float(cumulative[-1])
+
+    trans_errs, rot_errs = [], []
+    for i in range(n - 1):
+        target = cumulative[i] + target_dist
+        if target > cumulative[-1]:
+            break
+        j = int(np.searchsorted(cumulative, target))
+        if j >= n:
+            break
+        dT_est = np.linalg.inv(est[i]) @ est[j]
+        dT_gt  = np.linalg.inv(gt[i])  @ gt[j]
+        E      = np.linalg.inv(dT_gt)  @ dT_est
+        trans_errs.append(float(np.linalg.norm(E[:3, 3])))
+        cos_th = float(np.clip((np.trace(E[:3, :3]) - 1) / 2, -1, 1))
+        rot_errs.append(float(np.degrees(np.arccos(cos_th))))
+
+    if len(trans_errs) == 0:
+        return {
+            "rpe_trans_rmse": float("nan"),
+            "rpe_rot_rmse":   float("nan"),
+            "n_segments":     0,
+            "total_dist_m":   total_dist,
+            "target_dist_m":  target_dist,
+        }
+
+    te = np.array(trans_errs)
+    re = np.array(rot_errs)
+    return {
+        "rpe_trans_rmse": float(np.sqrt((te**2).mean())),
+        "rpe_rot_rmse":   float(np.sqrt((re**2).mean())),
+        "n_segments":     len(te),
+        "total_dist_m":   total_dist,
+        "target_dist_m":  target_dist,
+        "trans_errors":   te,
+        "rot_errors":     re,
+    }
+
+
 # ── one-call wrapper ──────────────────────────────────────────────────────────
 
 def align_and_evaluate(
@@ -177,20 +237,25 @@ def align_and_evaluate(
     align: str = "sim3",       # "sim3" for mono, "se3" for stereo
 ) -> Dict:
     """
-    Align, compute ATE and RPE, return combined result dict.
+    Align, compute ATE and frame-based + distance-based RPE.
     """
     if align == "sim3":
         result = align_sim3(est, gt)
     else:
         result = align_se3(est, gt)
 
-    ate = ate_rmse(result["traj_aligned"], gt)
+    ate    = ate_rmse(result["traj_aligned"], gt)
     rpe_1  = rpe(result["traj_aligned"], gt, delta=1)
     rpe_10 = rpe(result["traj_aligned"], gt, delta=10)
+    rpe_d  = rpe_distance_based(result["traj_aligned"], gt, target_dist=100.0)
 
     result.update(ate)
-    result["rpe_trans_rmse_d1"]  = rpe_1["rpe_trans_rmse"]
-    result["rpe_rot_rmse_d1"]    = rpe_1["rpe_rot_rmse"]
-    result["rpe_trans_rmse_d10"] = rpe_10["rpe_trans_rmse"]
-    result["rpe_rot_rmse_d10"]   = rpe_10["rpe_rot_rmse"]
+    result["rpe_trans_rmse_d1"]   = rpe_1["rpe_trans_rmse"]
+    result["rpe_rot_rmse_d1"]     = rpe_1["rpe_rot_rmse"]
+    result["rpe_trans_rmse_d10"]  = rpe_10["rpe_trans_rmse"]
+    result["rpe_rot_rmse_d10"]    = rpe_10["rpe_rot_rmse"]
+    result["rpe_trans_100m"]      = rpe_d["rpe_trans_rmse"]
+    result["rpe_rot_100m"]        = rpe_d["rpe_rot_rmse"]
+    result["rpe_n_segments_100m"] = rpe_d["n_segments"]
+    result["total_dist_m"]        = rpe_d["total_dist_m"]
     return result

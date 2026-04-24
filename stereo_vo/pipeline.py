@@ -56,8 +56,8 @@ class StereoVO:
         self._map2d: Optional[np.ndarray] = None
 
         self._prev_left: Optional[np.ndarray] = None
+        self._rect_r_current: Optional[np.ndarray] = None
 
-        # ── Rt_to_T not needed here — identity init is fine with np.eye ──
         self._T_cur  = np.eye(4, dtype=np.float64)
         self._T_prev = np.eye(4, dtype=np.float64)
 
@@ -70,6 +70,7 @@ class StereoVO:
                 timestamp: float = 0.0) -> Optional[np.ndarray]:
         self._frame_id += 1
         rect_l, rect_r = self.calib.rectify(img_left, img_right)
+        self._rect_r_current = rect_r
         disp = self.disp_cmp.compute(rect_l, rect_r, rectified=True)
 
         if not self._initialised:
@@ -87,6 +88,19 @@ class StereoVO:
     def current_pose(self) -> np.ndarray:
         return self._T_cur.copy()
 
+    # Properties used by the live visualizer (map2d = current tracked pts)
+    @property
+    def cur_pts(self) -> Optional[np.ndarray]:
+        return self._map2d
+
+    @property
+    def cur_pts_right(self) -> Optional[np.ndarray]:
+        return None
+
+    @property
+    def cur_right_img(self) -> Optional[np.ndarray]:
+        return self._rect_r_current
+
     # ── init ──────────────────────────────────────────────────────────────
 
     def _init(self, rect_l: np.ndarray, disp: np.ndarray,
@@ -100,7 +114,6 @@ class StereoVO:
             self._log(f"Init: {len(pts3d_cam)} pts – retry")
             return None
 
-        # display map init and repro error
         if self.cfg.verbose:
             print_map_init(pts3d_cam, pts2d_v,
                            frame_i=0, frame_j=0)
@@ -152,7 +165,7 @@ class StereoVO:
             self._record(ts)
             return self._T_cur.copy()
 
-        # 2. PnP — det(R) check now inside pnp_ransac
+        # 2. PnP
         R, t, inlier_mask = pnp_ransac(
             map3d_t, map2d_cur,
             self.K, self.dist,
@@ -169,7 +182,7 @@ class StereoVO:
             self._record(ts)
             return self._T_cur.copy()
 
-        # 3. BA — det(R) check now inside refine_pose_ba
+        # 3. BA
         if self.cfg.use_ba and inlier_mask.sum() >= 6:
             R, t = refine_pose_ba(
                 R, t,
@@ -179,7 +192,6 @@ class StereoVO:
             )
 
         # 4. Velocity check
-        # ── Rt_to_T + invert_T replace manual T_cw + np.linalg.inv ──────
         T_cw = Rt_to_T(R, t)
         T_wc = invert_T(T_cw)
         vel  = np.linalg.norm(T_wc[:3, 3] - self._T_cur[:3, 3])
@@ -237,9 +249,6 @@ class StereoVO:
         if len(pts3d_cam) == 0:
             return
 
-        # ── cam_from_world gives R_wc, t_wc for cam→world transform ─────
-        # We need world = R_wc @ pts_cam + t_wc
-        # cam_from_world returns (R_cw, t_cw) so we use T_cur directly
         R_wc = self._T_cur[:3, :3]
         t_wc = self._T_cur[:3,  3]
         pts3d_w = (R_wc @ pts3d_cam.T).T + t_wc

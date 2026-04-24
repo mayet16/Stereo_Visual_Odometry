@@ -61,6 +61,7 @@ class MonoVO:
         self.n_failures    = 0
         self.n_map_extends = 0
         self.n_local_ba    = 0
+        self.cur_pts: Optional[np.ndarray] = None
 
         self._map3d: Optional[np.ndarray] = None
         self._map2d: Optional[np.ndarray] = None
@@ -342,7 +343,7 @@ class MonoVO:
             self.K, self.dist,
         )
         proj    = proj.reshape(-1, 2)
-        h, w    = 512, 512
+        h, w    = self.cam.height, self.cam.width
         in_img  = ((proj[:, 0] > 0) & (proj[:, 0] < w) &
                    (proj[:, 1] > 0) & (proj[:, 1] < h))
         err     = np.linalg.norm(proj - pts2d_ba, axis=1)
@@ -460,6 +461,7 @@ class MonoVO:
         return p1.reshape(-1, 2)[ok], ok
 
     def _record(self, ts: float) -> None:
+        self.cur_pts = self._map2d
         self._timestamps.append(ts)
         self._poses.append(self._T_cur.copy())
 
