@@ -213,7 +213,7 @@ class StereoVO:
         self._log(f"[{self._frame_id:04d}] OK in={n_in}/{n_tracked} "
                   f"vel={vel:.4f}m pos={np.round(T_wc[:3,3], 3)}")
 
-        # 6. Reprojection filter
+        # 6. Reprojection filter on PnP inliers
         pts3d_in = map3d_t[inlier_mask]
         pts2d_in = map2d_cur[inlier_mask]
         pts3d_f, pts2d_f = self._filter_reproj(
@@ -222,6 +222,19 @@ class StereoVO:
         )
         self._map3d = pts3d_f if len(pts3d_f) > 10 else pts3d_in
         self._map2d = pts2d_f if len(pts2d_f) > 10 else pts2d_in
+
+        # 6b. Refresh map2d: reproject map3d to exact pixel positions.
+        # Eliminates LK drift that accumulates when map2d is only
+        # updated via optical flow (without this, rotation errors grow
+        # monotonically because 2D correspondences slowly diverge from
+        # the true projected positions).
+        self._refresh_map2d(rect_l)
+
+        # 6c. Re-measure existing map point depths from current disparity.
+        # Without this, depths are only set once at point creation and
+        # then drift as PnP errors accumulate.  A fresh stereo depth at
+        # each frame keeps the map metric continuously.
+        self._update_depths_from_disp(disp)
 
         # 7. Add new stereo points if map is thin
         if len(self._map3d) < self.cfg.min_tracked_pts:
@@ -270,6 +283,65 @@ class StereoVO:
 
     # ── helpers ───────────────────────────────────────────────────────────
 
+    def _update_depths_from_disp(self, disp: np.ndarray) -> None:
+        """Re-measure depth of each tracked map point from the current
+        disparity map and update its world-frame 3D position accordingly.
+        Uses the same patch-median approach as point addition."""
+        if self._map3d is None or self._map2d is None or len(self._map2d) == 0:
+            return
+        r     = self.disp_cmp.cfg.patch_radius
+        h, w  = disp.shape
+        R_wc  = self._T_cur[:3, :3]
+        t_wc  = self._T_cur[:3, 3]
+        cx    = self.disp_cmp.cx
+        cy    = self.disp_cmp.cy
+        f     = self.disp_cmp.f
+        B     = self.disp_cmp.B
+        min_d = self.disp_cmp.cfg.min_disparity
+        min_z = self.disp_cmp.cfg.min_depth
+        max_z = self.disp_cmp.cfg.max_depth
+
+        for i, (u_f, v_f) in enumerate(self._map2d):
+            u = int(np.clip(round(u_f), r, w - r - 1))
+            v = int(np.clip(round(v_f), r, h - r - 1))
+            patch = disp[v-r:v+r+1, u-r:u+r+1].ravel()
+            good  = patch[patch > min_d]
+            if len(good) < 3:
+                continue
+            Z = f * B / float(np.median(good))
+            if not (min_z <= Z <= max_z):
+                continue
+            X = (u_f - cx) * Z / f
+            Y = (v_f - cy) * Z / f
+            self._map3d[i] = R_wc @ np.array([X, Y, Z]) + t_wc
+
+    def _refresh_map2d(self, rect_l: np.ndarray) -> None:
+        """Reproject map3d to current pose → replace map2d with exact pixel
+        positions and drop points that have left the image.  Called after
+        every accepted pose so LK tracking always starts from the true
+        projection rather than the accumulated optical-flow position."""
+        if self._map3d is None or len(self._map3d) == 0:
+            return
+        R_cw, t_cw = cam_from_world(self._T_cur)
+        rvec, _ = cv2.Rodrigues(R_cw)
+        proj, _ = cv2.projectPoints(
+            self._map3d.astype(np.float64),
+            rvec, t_cw.reshape(3, 1).astype(np.float64),
+            self.K, self.dist,
+        )
+        proj    = proj.reshape(-1, 2).astype(np.float32)
+        pts_cam = (R_cw @ self._map3d.T).T + t_cw
+        h, w    = rect_l.shape[:2]
+        in_img  = (
+            (proj[:, 0] >= 1) & (proj[:, 0] < w - 1) &
+            (proj[:, 1] >= 1) & (proj[:, 1] < h - 1) &
+            (pts_cam[:, 2] > 0.01)
+        )
+        if in_img.sum() < self.cfg.pnp_min_inliers:
+            return
+        self._map3d = self._map3d[in_img]
+        self._map2d = proj[in_img]
+
     def _filter_reproj(
         self,
         pts3d: np.ndarray, pts2d: np.ndarray,
@@ -306,8 +378,8 @@ class StereoVO:
         p0         = pts0.reshape(-1, 1, 2).astype(np.float32)
         p1, s1, _  = cv2.calcOpticalFlowPyrLK(img0, img1, p0, None, **lk)
         p0b, s0, _ = cv2.calcOpticalFlowPyrLK(img1, img0, p1, None, **lk)
-        fb  = np.linalg.norm(p0 - p0b, axis=2).squeeze()
-        ok  = (s1.squeeze() == 1) & (s0.squeeze() == 1) & (fb < 2.0)
+        fb  = np.linalg.norm(p0 - p0b, axis=2).ravel()
+        ok  = (s1.ravel() == 1) & (s0.ravel() == 1) & (fb < 2.0)
         return p1.reshape(-1, 2)[ok], ok
 
     def _record(self, ts: float) -> None:

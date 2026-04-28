@@ -117,11 +117,11 @@ class CameraIntrinsics:
 
 @dataclass
 class StereoPair:
-    cam0: CameraIntrinsics
-    cam1: CameraIntrinsics
-    T_cam1_cam0: np.ndarray        # 4×4  cam1 pose in cam0 frame
-    R:         np.ndarray        # ← add: rotation cam1 from cam0 (3×3)
-    t:         np.ndarray        # ← add: translation cam1 from cam0 (3,)
+    cam0:        CameraIntrinsics
+    cam1:        CameraIntrinsics
+    T_cam1_cam0: np.ndarray             # 4×4  cam1 pose in cam0 frame
+    R:           np.ndarray             # rotation    cam1←cam0 (3×3)
+    t:           np.ndarray             # translation cam1←cam0 (3,)
     map1_left:   Optional[np.ndarray] = field(default=None, repr=False)
     map2_left:   Optional[np.ndarray] = field(default=None, repr=False)
     map1_right:  Optional[np.ndarray] = field(default=None, repr=False)
@@ -135,27 +135,52 @@ class StereoPair:
     def T_cam0_cam1(self) -> np.ndarray:
         return np.linalg.inv(self.T_cam1_cam0)
 
-    def compute_rectification(self) -> None:
-        h, w  = self.cam0.height, self.cam0.width
-        R_rel = self.T_cam1_cam0[:3, :3]
-        t_rel = self.T_cam1_cam0[:3,  3]
-
-        R_left, R_right, P_left, P_right, Q, _, _ = cv2.stereoRectify(
-            self.cam0.K, self.cam0.dist_coeffs,
-            self.cam1.K, self.cam1.dist_coeffs,
-            (w, h), R_rel, t_rel,
-            flags=cv2.CALIB_ZERO_DISPARITY, alpha=0,
+    @property
+    def cam0_rect(self) -> "CameraIntrinsics":
+        """Rectified left-camera intrinsics: K from P_left, zero distortion.
+        Use this (not cam0) whenever operating on rectified images."""
+        assert self.P_left is not None, "Call compute_rectification() first."
+        return CameraIntrinsics(
+            fx           = float(self.P_left[0, 0]),
+            fy           = float(self.P_left[1, 1]),
+            cx           = float(self.P_left[0, 2]),
+            cy           = float(self.P_left[1, 2]),
+            width        = self.cam0.width,
+            height       = self.cam0.height,
+            dist_coeffs  = np.zeros(4, dtype=np.float64),
         )
-        self.map1_left,  self.map2_left  = cv2.initUndistortRectifyMap(
-            self.cam0.K, self.cam0.dist_coeffs,
-            R_left,  P_left,  (w, h), cv2.CV_32FC1)
-        self.map1_right, self.map2_right = cv2.initUndistortRectifyMap(
-            self.cam1.K, self.cam1.dist_coeffs,
-            R_right, P_right, (w, h), cv2.CV_32FC1)
 
-        self.P_left  = P_left
-        self.P_right = P_right
-        self.Q       = Q
+    def compute_rectification(self) -> None:
+        """
+        TUM VI uses the equidistant (Kannala-Brandt KB4) fisheye model.
+        cv2.fisheye must be used — cv2.stereoRectify assumes radtan and
+        gives wrong maps for this dataset.
+        """
+        h, w  = self.cam0.height, self.cam0.width
+        R_rel = self.T_cam1_cam0[:3, :3].copy()          # must be contiguous
+        t_rel = self.T_cam1_cam0[:3,  3].copy().reshape(3, 1)
+
+        # D must be (1,4) for cv2.fisheye
+        D0 = self.cam0.dist_coeffs.reshape(1, 4)
+        D1 = self.cam1.dist_coeffs.reshape(1, 4)
+
+        # fov_scale=0.33 recovers f≈190px (same as original intrinsics) so that
+        # the fB product stays ≈19 m·px and SGBM disparities land in 2-64 px.
+        R_left, R_right, P_left, P_right, Q = cv2.fisheye.stereoRectify(
+            self.cam0.K, D0,
+            self.cam1.K, D1,
+            (w, h), R_rel, t_rel,
+            flags=cv2.CALIB_ZERO_DISPARITY,
+            fov_scale=0.33,
+        )
+        self.map1_left,  self.map2_left  = cv2.fisheye.initUndistortRectifyMap(
+            self.cam0.K, D0, R_left,  P_left,  (w, h), cv2.CV_32FC1)
+        self.map1_right, self.map2_right = cv2.fisheye.initUndistortRectifyMap(
+            self.cam1.K, D1, R_right, P_right, (w, h), cv2.CV_32FC1)
+
+        self.P_left   = P_left
+        self.P_right  = P_right
+        self.Q        = Q
         self.baseline = abs(P_right[0, 3] / P_right[0, 0])
 
     def rectify(self, img_left: np.ndarray, img_right: np.ndarray
@@ -165,6 +190,11 @@ class StereoPair:
         rl = cv2.remap(img_left,  self.map1_left,  self.map2_left,  cv2.INTER_LINEAR)
         rr = cv2.remap(img_right, self.map1_right, self.map2_right, cv2.INTER_LINEAR)
         return rl, rr
+
+    def rectify_left(self, img_left: np.ndarray) -> np.ndarray:
+        if self.map1_left is None:
+            raise RuntimeError("Call compute_rectification() first.")
+        return cv2.remap(img_left, self.map1_left, self.map2_left, cv2.INTER_LINEAR)
 
 
 def load_calibration(yaml_path: str) -> StereoPair:
@@ -284,6 +314,12 @@ class Frame:
         if self._img_right is None:
             self._img_right = self._load(self.img_path_right)
         return self._img_right
+
+    @property
+    def img_left_rect(self) -> np.ndarray:
+        if self.calib is None:
+            raise RuntimeError("No calibration attached.")
+        return self.calib.rectify_left(self.img_left)
 
     @property
     def stereo_rectified(self) -> Tuple[np.ndarray, np.ndarray]:

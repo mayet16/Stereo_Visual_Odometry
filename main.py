@@ -43,14 +43,14 @@ _SHOW = os.environ.get("SHOW_VIS", "1") != "0"
 _SHOW = 0
 SEQUENCES = [
     "config/tumvi_room2.yaml",
-    # "config/tumvi_corridor3.yaml",
-    # "config/tumvi_outdoors5.yaml",
+    "config/tumvi_corridor3.yaml",
+    "config/tumvi_outdoors5.yaml",
 ]
 
 # room2 has full GT → ATE.  corridor3/outdoors5 → start-end drift only.
 FULL_GT = {"room2"}
 
-_FEAT = FeatureConfig(
+_FEAT_STEREO = FeatureConfig(
     method       = "orb",
     max_features = 3000,
     lk_win_size  = 21,
@@ -59,48 +59,74 @@ _FEAT = FeatureConfig(
     grid_cols    = 5,
 )
 
+# Mono config: same grid as stereo but larger LK window + extra pyramid level
+# to better handle the rotation-heavy handheld motion in TUM-VI.
+_FEAT_MONO = FeatureConfig(
+    method         = "orb",
+    max_features   = 3000,
+    lk_win_size    = 25,   # larger window handles bigger inter-frame motion
+    lk_max_level   = 4,    # extra pyramid level for large rotations
+    grid_rows      = 5,
+    grid_cols      = 5,
+    fast_threshold = 15,   # lower threshold → more keypoints per cell
+)
+
+_FEAT = _FEAT_STEREO   # keep backward-compat alias for stereo configs
+
 MONO_CONFIGS = {
     "room2": MonoVOConfig(
-        feature         = _FEAT,
-        min_tracked_pts = 120,
-        max_map_pts     = 800,
-        min_parallax_px = 8.0,
-        max_parallax_px = 40.0,
-        init_scale      = 0.02,   # fixed scale — Sim3 alignment corrects it
-        pnp_min_inliers = 15,
-        pnp_ransac_th   = 6.0,
-        reproj_thresh   = 4.0,
-        use_ba          = True,
-        max_velocity    = 0.5,
-        verbose         = False,
+        feature               = _FEAT_MONO,
+        min_tracked_pts       = 50,
+        max_map_pts           = 600,
+        min_parallax_px       = 8.0,
+        max_parallax_px       = 40.0,
+        expected_depth        = 3.0,
+        pnp_min_inliers       = 12,
+        pnp_ransac_th         = 6.0,
+        reproj_thresh         = 4.0,
+        use_ba                = True,
+        max_velocity          = 0.5,
+        kf_min_parallax_px    = 15.0,
+        kf_max_parallax_px    = 40.0,
+        kf_min_baseline_ratio = 0.03,
+        max_cvm_frames        = 3,
+        verbose               = False,
     ),
     "corridor3": MonoVOConfig(
-        feature         = _FEAT,
-        min_tracked_pts = 100,
-        max_map_pts     = 1200,
-        min_parallax_px = 4.0,
-        max_parallax_px = 60.0,
-        init_scale      = 0.02,
-        pnp_min_inliers = 12,
-        pnp_ransac_th   = 6.0,
-        reproj_thresh   = 4.0,
-        use_ba          = True,
-        max_velocity    = 1.0,
-        verbose         = False,
+        feature               = _FEAT_MONO,
+        min_tracked_pts       = 50,
+        max_map_pts           = 600,
+        min_parallax_px       = 4.0,
+        max_parallax_px       = 60.0,
+        expected_depth        = 3.0,
+        pnp_min_inliers       = 12,
+        pnp_ransac_th         = 6.0,
+        reproj_thresh         = 4.0,
+        use_ba                = True,
+        max_velocity          = 1.0,
+        kf_min_parallax_px    = 15.0,
+        kf_max_parallax_px    = 80.0,
+        kf_min_baseline_ratio = 0.03,
+        max_cvm_frames        = 3,
+        verbose               = False,
     ),
     "outdoors5": MonoVOConfig(
-        feature         = _FEAT,
-        min_tracked_pts = 120,
-        max_map_pts     = 800,
-        min_parallax_px = 6.0,
-        max_parallax_px = 80.0,
-        init_scale      = 0.05,   # outdoor walking — slightly larger scale
-        pnp_min_inliers = 15,
-        pnp_ransac_th   = 6.0,
-        reproj_thresh   = 4.0,
-        use_ba          = True,
-        max_velocity    = 2.0,
-        verbose         = False,
+        feature               = _FEAT_MONO,
+        min_tracked_pts       = 50,
+        max_map_pts           = 600,
+        min_parallax_px       = 6.0,
+        max_parallax_px       = 80.0,
+        expected_depth        = 5.0,
+        pnp_min_inliers       = 12,
+        pnp_ransac_th         = 6.0,
+        reproj_thresh         = 4.0,
+        use_ba                = True,
+        max_velocity          = 2.0,
+        kf_min_parallax_px    = 15.0,
+        kf_max_parallax_px    = 100.0,
+        kf_min_baseline_ratio = 0.03,
+        max_cvm_frames        = 3,
+        verbose               = False,
     ),
 }
 
@@ -115,11 +141,11 @@ STEREO_CONFIGS = {
             min_disparity   = 1.5,
             patch_radius    = 3,
         ),
-        min_tracked_pts = 120,
-        max_map_pts     = 500,
-        pnp_min_inliers = 15,
-        pnp_ransac_th   = 4.0,
-        reproj_thresh   = 4.0,
+        min_tracked_pts = 150,
+        max_map_pts     = 600,
+        pnp_min_inliers = 20,
+        pnp_ransac_th   = 2.0,
+        reproj_thresh   = 2.0,
         use_ba          = True,
         max_velocity    = 0.5,
         verbose         = False,
@@ -134,11 +160,11 @@ STEREO_CONFIGS = {
             min_disparity   = 1.0,
             patch_radius    = 3,
         ),
-        min_tracked_pts = 120,
-        max_map_pts     = 500,
-        pnp_min_inliers = 15,
-        pnp_ransac_th   = 4.0,
-        reproj_thresh   = 4.0,
+        min_tracked_pts = 150,
+        max_map_pts     = 600,
+        pnp_min_inliers = 20,
+        pnp_ransac_th   = 2.0,
+        reproj_thresh   = 2.0,
         use_ba          = True,
         max_velocity    = 1.0,
         verbose         = False,
@@ -153,11 +179,11 @@ STEREO_CONFIGS = {
             min_disparity   = 1.0,
             patch_radius    = 3,
         ),
-        min_tracked_pts = 120,
+        min_tracked_pts = 150,
         max_map_pts     = 600,
-        pnp_min_inliers = 15,
-        pnp_ransac_th   = 4.0,
-        reproj_thresh   = 4.0,
+        pnp_min_inliers = 20,
+        pnp_ransac_th   = 2.0,
+        reproj_thresh   = 2.0,
         use_ba          = True,
         max_velocity    = 2.0,
         verbose         = False,
@@ -232,7 +258,7 @@ def collect_gt_timestamps(loader, poses, timestamps):
 def run_mono(loader, seq, cfg, show: bool = True):
     """Run monocular VO with live side-by-side display."""
     print(f"\nRunning monocular VO ...")
-    vo = MonoVO(loader.calib.cam0, cfg)
+    vo = MonoVO(loader.calib.cam0_rect, cfg)
 
     vis = LiveVisualizer(
         title     = f"Mono VO — {seq}",
@@ -242,20 +268,19 @@ def run_mono(loader, seq, cfg, show: bool = True):
 
     t0 = time.time()
     for frame in loader:
-        vo.process(frame.img_left, frame.timestamp)
+        img_rect = frame.img_left_rect
+        vo.process(img_rect, frame.timestamp)
 
         # update live display every frame
         if vo._initialised:
             vis.update(
-                img        = frame.img_left,
+                img        = img_rect,
                 pts_cur    = vo.cur_pts,
                 pose       = vo.trajectory[1][-1],
                 gt_pose    = frame.T_world_cam0,
                 frame_id   = vo._frame_id,
                 n_failures = vo.n_failures,
-                extra_info = (f"scale={cfg.init_scale:.3f}"
-                              if cfg.init_scale is not None
-                              else f"auto-scale depth={cfg.expected_depth:.1f}m"),
+                extra_info = f"depth={cfg.expected_depth:.1f}m",
             )
 
         frame.release()
@@ -264,8 +289,11 @@ def run_mono(loader, seq, cfg, show: bool = True):
     vis.close()
 
     fps = len(loader) / elapsed
-    print(f"  Done: {len(loader)} frames  {elapsed:.1f}s  "
-          f"({fps:.1f} fps)  failures={vo.n_failures}")
+    print(f"  Done: {len(loader)} frames  {elapsed:.1f}s  ({fps:.1f} fps)  "
+          f"failures={vo.n_failures}  "
+          f"[LK={vo.n_lk_fails}  PnP={vo.n_pnp_fails}  vel={vo.n_vel_fails}]  "
+          f"kf_updates={vo.n_kf_updates}  "
+          f"vd_reinit={vo.n_vd_reinits}  e_reinit={vo.n_e_reinits}")
     return vo, elapsed
 
 
@@ -381,9 +409,9 @@ def save_mono_plot(cfg, loader, mono_vo, mono_time, out_dir):
     if mono_aligned is not None:
         ax.plot(mono_aligned[:, 0], mono_aligned[:, 1], "b-", lw=1.2,
                 label=f"Mono VO (Sim3-aligned, ATE={ate_val:.3f}m)")
-        ax.scatter(*mono_aligned[0,  :2], c="blue", s=40, zorder=5,
+        ax.scatter(mono_aligned[0,  0], mono_aligned[0,  1], c="blue", s=40, zorder=5,
                    label="start")
-        ax.scatter(*mono_aligned[-1, :2], c="red",  s=40, zorder=5,
+        ax.scatter(mono_aligned[-1, 0], mono_aligned[-1, 1], c="red",  s=40, zorder=5,
                    label="end")
     ax.set_xlabel("x [m]"); ax.set_ylabel("y [m]")
     ax.set_title("Top-down x–y  (Sim3-aligned)  ← main result")
@@ -438,9 +466,9 @@ def save_stereo_plot(cfg, loader, stereo_vo, stereo_time, out_dir):
             ax.plot(gt_arr[:, 0], gt_arr[:, 1], "g--", lw=1.2, label="GT")
         ax.plot(stereo_aligned[:, 0], stereo_aligned[:, 1], "r-", lw=1.0,
                 label=f"Stereo VO (SE3-aligned, ATE={ate_val:.3f}m)")
-        ax.scatter(*stereo_aligned[0,  :2], c="blue", s=40, zorder=5,
+        ax.scatter(stereo_aligned[0,  0], stereo_aligned[0,  1], c="blue", s=40, zorder=5,
                    label="start")
-        ax.scatter(*stereo_aligned[-1, :2], c="red",  s=40, zorder=5,
+        ax.scatter(stereo_aligned[-1, 0], stereo_aligned[-1, 1], c="red",  s=40, zorder=5,
                    label="end")
         ax.set_title("Top-down x–y  (SE3-aligned, metric)")
     else:
@@ -637,6 +665,9 @@ def save_results_csv(results: dict, path: str) -> None:
 
 
 all_results = {}
+import cv2
+print(cv2.__version__); print(cv2.getBuildInformation()[:800])
+
 
 # print calibration once using first sequence
 _tmp_cfg    = load_run_config(SEQUENCES[0])

@@ -393,11 +393,21 @@ def save_3d_trajectory(
     if align and gt is not None and len(gt) > 10:
         try:
             from evaluation.metrics import align_and_evaluate
-            gt_T   = [T for T in gt_poses if T is not None]
-            result = align_and_evaluate(list(est_poses), gt_T, align=align)
-            est    = np.array(
-                [T[:3, 3] for T in result["traj_aligned"]], dtype=np.float64)
-            ate_val = result["ate_rmse"]
+            # Pair by index — only frames where GT is not None
+            paired_est, paired_gt = [], []
+            for i, g in enumerate(gt_poses):
+                if g is not None and i < len(est_poses):
+                    paired_est.append(est_poses[i])
+                    paired_gt.append(g)
+            if len(paired_est) >= 10:
+                result  = align_and_evaluate(paired_est, paired_gt, align=align)
+                s       = result.get("s", 1.0)
+                R_align = result["R"]
+                t_align = result["t"]
+                est     = np.array(
+                    [s * R_align @ T[:3, 3] + t_align for T in est_poses],
+                    dtype=np.float64)
+                ate_val = result["ate_rmse"]
         except Exception:
             pass
 
@@ -412,20 +422,22 @@ def save_3d_trajectory(
         pane.fill = False
         pane.set_edgecolor("#333333")
 
+    # TUM-VI world frame: X-Y is the horizontal floor plane, Z is UP.
+    # Plot (X, Y, Z) so the 3-D vertical axis matches real height.
     if gt is not None:
-        ax3d.plot(gt[:, 0], gt[:, 2], gt[:, 1],
+        ax3d.plot(gt[:, 0], gt[:, 1], gt[:, 2],
                   color="#A5D6A7", lw=1.0, ls="--", alpha=0.85, label="GT")
-        ax3d.scatter(*gt[0,  [0, 2, 1]], c="lime", s=20, zorder=4, marker="x")
-        ax3d.scatter(*gt[-1, [0, 2, 1]], c="red",  s=20, zorder=4, marker="x")
+        ax3d.scatter(*gt[0,  [0, 1, 2]], c="lime", s=20, zorder=4, marker="x")
+        ax3d.scatter(*gt[-1, [0, 1, 2]], c="red",  s=20, zorder=4, marker="x")
 
-    ax3d.plot(est[:, 0], est[:, 2], est[:, 1],
+    ax3d.plot(est[:, 0], est[:, 1], est[:, 2],
               color="#4FC3F7", lw=1.2, label="Estimated")
-    ax3d.scatter(*est[0,  [0, 2, 1]], c="lime", s=40, zorder=5, label="Start")
-    ax3d.scatter(*est[-1, [0, 2, 1]], c="red",  s=40, zorder=5, label="End")
+    ax3d.scatter(*est[0,  [0, 1, 2]], c="lime", s=40, zorder=5, label="Start")
+    ax3d.scatter(*est[-1, [0, 1, 2]], c="red",  s=40, zorder=5, label="End")
 
     ax3d.set_xlabel("X [m]", color="white", fontsize=8)
-    ax3d.set_ylabel("Z [m]", color="white", fontsize=8)
-    ax3d.set_zlabel("Y [m]", color="white", fontsize=8)
+    ax3d.set_ylabel("Y [m]", color="white", fontsize=8)
+    ax3d.set_zlabel("Z [m] (up)", color="white", fontsize=8)
     ax3d.set_title("3D view", color="white", fontsize=9)
     ax3d.legend(fontsize=7, facecolor="#222222", labelcolor="white",
                 loc="upper left")
@@ -435,22 +447,26 @@ def save_3d_trajectory(
     ax_xy = fig.add_subplot(324)
     ax_yz = fig.add_subplot(326)
 
+    # TUM-VI world frame: X and Y are horizontal, Z is UP.
+    # Top-down = X-Y floor plan (shows walking loop).
+    # Front    = X-Z (horizontal vs height).
+    # Side     = Y-Z (horizontal vs height).
     proj_defs = [
         (ax_xz,
-         est[:, 0], est[:, 2],
-         gt[:, 0] if gt is not None else None,
-         gt[:, 2] if gt is not None else None,
-         "X [m]", "Z [m]", "Top-down  X–Z"),
-        (ax_xy,
          est[:, 0], est[:, 1],
          gt[:, 0] if gt is not None else None,
          gt[:, 1] if gt is not None else None,
-         "X [m]", "Y [m]", "Front     X–Y"),
-        (ax_yz,
-         est[:, 2], est[:, 1],
+         "X [m]", "Y [m]", "Top-down  X–Y"),
+        (ax_xy,
+         est[:, 0], est[:, 2],
+         gt[:, 0] if gt is not None else None,
          gt[:, 2] if gt is not None else None,
+         "X [m]", "Z [m]", "Front     X–Z"),
+        (ax_yz,
+         est[:, 1], est[:, 2],
          gt[:, 1] if gt is not None else None,
-         "Z [m]", "Y [m]", "Side      Z–Y"),
+         gt[:, 2] if gt is not None else None,
+         "Y [m]", "Z [m]", "Side      Y–Z"),
     ]
 
     for ax, xe, ye, xg, yg, xl, yl, ttl in proj_defs:
@@ -541,23 +557,25 @@ def save_comparison_3d(
     for pane in (ax3.xaxis.pane, ax3.yaxis.pane, ax3.zaxis.pane):
         pane.fill = False; pane.set_edgecolor("#333333")
 
+    # TUM-VI world frame: X-Y is horizontal floor plane, Z is UP.
     if gt is not None:
-        ax3.plot(gt[:, 0], gt[:, 2], gt[:, 1],
+        ax3.plot(gt[:, 0], gt[:, 1], gt[:, 2],
                  color="#A5D6A7", lw=1.2, ls="--", alpha=0.9, label="GT")
-    ax3.plot(mono_arr[:, 0],   mono_arr[:, 2],   mono_arr[:, 1],
+    ax3.plot(mono_arr[:, 0],   mono_arr[:, 1],   mono_arr[:, 2],
              color="#4FC3F7", lw=1.0,
              label=f"Mono VO Sim3  ATE={mono_ate:.3f}m")
-    ax3.plot(stereo_arr[:, 0], stereo_arr[:, 2], stereo_arr[:, 1],
+    ax3.plot(stereo_arr[:, 0], stereo_arr[:, 1], stereo_arr[:, 2],
              color="#EF9A9A", lw=1.0,
              label=f"Stereo VO SE3  ATE={stereo_ate:.3f}m")
     ax3.set_xlabel("X [m]", color="white", fontsize=8)
-    ax3.set_ylabel("Z [m]", color="white", fontsize=8)
-    ax3.set_zlabel("Y [m]", color="white", fontsize=8)
+    ax3.set_ylabel("Y [m]", color="white", fontsize=8)
+    ax3.set_zlabel("Z [m] (up)", color="white", fontsize=8)
     ax3.set_title("3-D view", color="white", fontsize=9)
     ax3.legend(fontsize=7, facecolor="#222222", labelcolor="white",
                loc="upper left")
 
     # ── top-down x-y ──────────────────────────────────────────────────────
+    # TUM-VI world frame: X-Y is the horizontal plane, Z is up.
     ax_xy = fig.add_subplot(132)
     ax_xy.set_facecolor("#111111")
     ax_xy.tick_params(colors="white", labelsize=7)
@@ -575,7 +593,7 @@ def save_comparison_3d(
     ax_xy.set_aspect("equal", adjustable="datalim")
     ax_xy.legend(fontsize=7, facecolor="#222222", labelcolor="white")
 
-    # ── z (height) over frames ────────────────────────────────────────────
+    # ── z (height) over frames ────────────────────────────────────────
     ax_z = fig.add_subplot(133)
     ax_z.set_facecolor("#111111")
     ax_z.tick_params(colors="white", labelsize=7)
