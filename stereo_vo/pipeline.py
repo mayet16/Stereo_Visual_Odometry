@@ -23,16 +23,18 @@ from utils.print_utils import print_map_init, print_stereo_reproj_error
 
 @dataclass
 class StereoVOConfig:
-    feature:         FeatureConfig   = field(default_factory=FeatureConfig)
-    disparity:       DisparityConfig = field(default_factory=DisparityConfig)
-    min_tracked_pts: int   = 120
-    max_map_pts:     int   = 500
-    pnp_min_inliers: int   = 15
-    pnp_ransac_th:   float = 4.0
-    reproj_thresh:   float = 4.0
-    use_ba:          bool  = True
-    max_velocity:    float = 0.5
-    verbose:         bool  = True
+    feature:          FeatureConfig   = field(default_factory=FeatureConfig)
+    disparity:        DisparityConfig = field(default_factory=DisparityConfig)
+    min_tracked_pts:  int   = 120
+    max_map_pts:      int   = 500
+    pnp_min_inliers:  int   = 15
+    pnp_ransac_th:    float = 4.0
+    reproj_thresh:    float = 4.0
+    use_ba:           bool  = True
+    max_velocity:     float = 0.5
+    use_depth_update: bool  = True   # disable for low-texture scenes (corridor)
+    use_clahe:        bool  = False  # CLAHE contrast enhancement before SGBM+LK
+    verbose:          bool  = True
 
 
 class StereoVO:
@@ -64,13 +66,18 @@ class StereoVO:
         self._timestamps: List[float]      = []
         self._poses:      List[np.ndarray] = []
 
+        self._clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+
     # ── public ────────────────────────────────────────────────────────────
 
     def process(self, img_left: np.ndarray, img_right: np.ndarray,
                 timestamp: float = 0.0) -> Optional[np.ndarray]:
         self._frame_id += 1
         rect_l, rect_r = self.calib.rectify(img_left, img_right)
-        self._rect_r_current = rect_r
+        self._rect_r_current = rect_r  # store original for display
+        if self.cfg.use_clahe:
+            rect_l = self._clahe.apply(rect_l)
+            rect_r = self._clahe.apply(rect_r)
         disp = self.disp_cmp.compute(rect_l, rect_r, rectified=True)
 
         if not self._initialised:
@@ -231,10 +238,10 @@ class StereoVO:
         self._refresh_map2d(rect_l)
 
         # 6c. Re-measure existing map point depths from current disparity.
-        # Without this, depths are only set once at point creation and
-        # then drift as PnP errors accumulate.  A fresh stereo depth at
-        # each frame keeps the map metric continuously.
-        self._update_depths_from_disp(disp)
+        # Disabled for low-texture scenes (e.g. corridors) where SGBM
+        # produces noisy disparity on walls — depth noise corrupts PnP.
+        if self.cfg.use_depth_update:
+            self._update_depths_from_disp(disp)
 
         # 7. Add new stereo points if map is thin
         if len(self._map3d) < self.cfg.min_tracked_pts:
@@ -267,7 +274,7 @@ class StereoVO:
         pts3d_w = (R_wc @ pts3d_cam.T).T + t_wc
 
         d    = np.linalg.norm(pts3d_w - t_wc, axis=1)
-        good = (d > 0.1) & (d < 10.0) & np.all(np.isfinite(pts3d_w), 1)
+        good = (d > 0.1) & (d < self.cfg.disparity.max_depth * 1.5) & np.all(np.isfinite(pts3d_w), 1)
         if good.sum() == 0:
             return
 
@@ -306,7 +313,7 @@ class StereoVO:
             v = int(np.clip(round(v_f), r, h - r - 1))
             patch = disp[v-r:v+r+1, u-r:u+r+1].ravel()
             good  = patch[patch > min_d]
-            if len(good) < 3:
+            if len(good) < 12:
                 continue
             Z = f * B / float(np.median(good))
             if not (min_z <= Z <= max_z):

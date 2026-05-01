@@ -427,13 +427,17 @@ def save_3d_trajectory(
     if gt is not None:
         ax3d.plot(gt[:, 0], gt[:, 1], gt[:, 2],
                   color="#A5D6A7", lw=1.0, ls="--", alpha=0.85, label="GT")
-        ax3d.scatter(*gt[0,  [0, 1, 2]], c="lime", s=20, zorder=4, marker="x")
-        ax3d.scatter(*gt[-1, [0, 1, 2]], c="red",  s=20, zorder=4, marker="x")
+        ax3d.scatter(gt[0, 0], gt[0, 1], gt[0, 2],
+                     c="lime",   s=60, zorder=5, marker="*", label="GT start")
+        ax3d.scatter(gt[-1, 0], gt[-1, 1], gt[-1, 2],
+                     c="gold",   s=60, zorder=5, marker="*", label="GT end")
 
     ax3d.plot(est[:, 0], est[:, 1], est[:, 2],
               color="#4FC3F7", lw=1.2, label="Estimated")
-    ax3d.scatter(*est[0,  [0, 1, 2]], c="lime", s=40, zorder=5, label="Start")
-    ax3d.scatter(*est[-1, [0, 1, 2]], c="red",  s=40, zorder=5, label="End")
+    ax3d.scatter(est[0, 0],  est[0, 1],  est[0, 2],
+                 c="blue", s=50, zorder=6, marker="o", label="Est start")
+    ax3d.scatter(est[-1, 0], est[-1, 1], est[-1, 2],
+                 c="red",  s=50, zorder=6, marker="D", label="Est end")
 
     ax3d.set_xlabel("X [m]", color="white", fontsize=8)
     ax3d.set_ylabel("Y [m]", color="white", fontsize=8)
@@ -482,12 +486,14 @@ def save_3d_trajectory(
         if xg is not None:
             ax.plot(xg, yg, color="#A5D6A7", lw=0.8, ls="--",
                     alpha=0.8, label="GT")
-            ax.scatter(xg[0],  yg[0],  c="lime", s=18, zorder=6, marker="x")
-            ax.scatter(xg[-1], yg[-1], c="red",  s=18, zorder=6, marker="x")
+            ax.scatter(xg[0],  yg[0],  c="lime", s=50, zorder=6, marker="*",
+                       label="GT start")
+            ax.scatter(xg[-1], yg[-1], c="gold", s=50, zorder=6, marker="*",
+                       label="GT end")
 
         ax.plot(xe, ye, color="#4FC3F7", lw=1.0, label="Est")
-        ax.scatter(xe[0],  ye[0],  c="lime", s=22, zorder=7)
-        ax.scatter(xe[-1], ye[-1], c="red",  s=22, zorder=7)
+        ax.scatter(xe[0],  ye[0],  c="blue", s=35, zorder=7, marker="o", label="Est start")
+        ax.scatter(xe[-1], ye[-1], c="red",  s=35, zorder=7, marker="D", label="Est end")
 
         ax.set_aspect("equal", adjustable="datalim")
         ax.legend(fontsize=6, facecolor="#222222", labelcolor="white",
@@ -509,43 +515,59 @@ def save_comparison_3d(
     mono_poses:   list,
     stereo_poses: list,
     gt_poses:     list,
-    seq_name:     str = "",
-    out_path:     str = "comparison_3d.png",
-    dpi:          int = 140,
+    seq_name:     str  = "",
+    out_path:     str  = "comparison_3d.png",
+    dpi:          int  = 140,
+    full_gt:      bool = True,
 ) -> None:
     """
     Dark-themed 3-D figure comparing GT, Sim3-aligned mono VO, and
     SE3-aligned stereo VO in a single plot.  Required by project spec
     Section VI: "Visualize trajectories in 3D plots comparing VO
     (up-to-scale), stereo VO (metric), and ground truth."
+
+    full_gt=True  → Sim3/SE3 alignment + ATE labels   (room2)
+    full_gt=False → trajectories passed in are already start-aligned;
+                    skip alignment, show drift labels, mark GT start/end
     """
     from evaluation.metrics import align_and_evaluate
 
-    gt_T   = [T for T in gt_poses if T is not None]
-    gt     = np.array([T[:3, 3] for T in gt_T], dtype=np.float64) if gt_T else None
+    gt_T = [T for T in gt_poses if T is not None]
+    gt   = np.array([T[:3, 3] for T in gt_T], dtype=np.float64) if gt_T else None
 
-    def _align(poses, mode):
-        # Pair by index — only frames where GT is not None
-        paired_est, paired_gt = [], []
-        for i, g in enumerate(gt_poses):
-            if g is not None and i < len(poses):
-                paired_est.append(poses[i])
-                paired_gt.append(g)
-        if len(paired_gt) < 10:
+    if full_gt:
+        def _align(poses, mode):
+            paired_est, paired_gt = [], []
+            for i, g in enumerate(gt_poses):
+                if g is not None and i < len(poses):
+                    paired_est.append(poses[i])
+                    paired_gt.append(g)
+            if len(paired_gt) < 10:
+                return np.array([T[:3, 3] for T in poses], dtype=np.float64), float("nan")
+            try:
+                res = align_and_evaluate(paired_est, paired_gt, align=mode)
+                s   = res.get("s", 1.0)
+                R, t = res["R"], res["t"]
+                arr = np.array([s * R @ T[:3, 3] + t for T in poses], dtype=np.float64)
+                return arr, res["ate_rmse"]
+            except Exception:
+                pass
             return np.array([T[:3, 3] for T in poses], dtype=np.float64), float("nan")
-        try:
-            res = align_and_evaluate(paired_est, paired_gt, align=mode)
-            s   = res.get("s", 1.0)
-            R, t = res["R"], res["t"]
-            # Apply alignment to ALL poses for visualization
-            arr = np.array([s * R @ T[:3, 3] + t for T in poses], dtype=np.float64)
-            return arr, res["ate_rmse"]
-        except Exception:
-            pass
-        return np.array([T[:3, 3] for T in poses], dtype=np.float64), float("nan")
 
-    mono_arr,   mono_ate   = _align(mono_poses,   "sim3")
-    stereo_arr, stereo_ate = _align(stereo_poses, "se3")
+        mono_arr,   mono_ate   = _align(mono_poses,   "sim3")
+        stereo_arr, stereo_ate = _align(stereo_poses, "se3")
+        mono_lbl   = f"Mono VO Sim3  ATE={mono_ate:.3f}m"
+        stereo_lbl = f"Stereo VO SE3  ATE={stereo_ate:.3f}m"
+        title_str  = (f"Mono vs Stereo VO — {seq_name}  |  "
+                      f"Mono ATE={mono_ate:.3f}m (Sim3)  "
+                      f"Stereo ATE={stereo_ate:.3f}m (SE3)")
+    else:
+        # Trajectories are already in GT world frame (start-aligned by caller)
+        mono_arr   = np.array([T[:3, 3] for T in mono_poses],   dtype=np.float64)
+        stereo_arr = np.array([T[:3, 3] for T in stereo_poses], dtype=np.float64)
+        mono_lbl   = "Mono VO (start-aligned)"
+        stereo_lbl = "Stereo VO (start-aligned)"
+        title_str  = f"Mono vs Stereo VO — {seq_name}  |  start-aligned to GT (drift metric)"
 
     fig = plt.figure(figsize=(18, 8))
     fig.patch.set_facecolor("#0e0e0e")
@@ -557,16 +579,26 @@ def save_comparison_3d(
     for pane in (ax3.xaxis.pane, ax3.yaxis.pane, ax3.zaxis.pane):
         pane.fill = False; pane.set_edgecolor("#333333")
 
-    # TUM-VI world frame: X-Y is horizontal floor plane, Z is UP.
     if gt is not None:
-        ax3.plot(gt[:, 0], gt[:, 1], gt[:, 2],
-                 color="#A5D6A7", lw=1.2, ls="--", alpha=0.9, label="GT")
+        if full_gt:
+            ax3.plot(gt[:, 0], gt[:, 1], gt[:, 2],
+                     color="#A5D6A7", lw=1.2, ls="--", alpha=0.9, label="GT")
+        ax3.scatter(float(gt[0,  0]), float(gt[0,  1]), float(gt[0,  2]),
+                    c="lime", s=80, zorder=7, marker="*", label="GT start")
+        ax3.scatter(float(gt[-1, 0]), float(gt[-1, 1]), float(gt[-1, 2]),
+                    c="gold", s=80, zorder=7, marker="*", label="GT end")
     ax3.plot(mono_arr[:, 0],   mono_arr[:, 1],   mono_arr[:, 2],
-             color="#4FC3F7", lw=1.0,
-             label=f"Mono VO Sim3  ATE={mono_ate:.3f}m")
+             color="#4FC3F7", lw=1.0, label=mono_lbl)
+    ax3.scatter(mono_arr[0, 0],  mono_arr[0, 1],  mono_arr[0, 2],
+                c="cyan",   s=50, zorder=6, marker="o", label="Mono est start")
+    ax3.scatter(mono_arr[-1, 0], mono_arr[-1, 1], mono_arr[-1, 2],
+                c="cyan",   s=50, zorder=6, marker="D", label="Mono est end")
     ax3.plot(stereo_arr[:, 0], stereo_arr[:, 1], stereo_arr[:, 2],
-             color="#EF9A9A", lw=1.0,
-             label=f"Stereo VO SE3  ATE={stereo_ate:.3f}m")
+             color="#EF9A9A", lw=1.0, label=stereo_lbl)
+    ax3.scatter(stereo_arr[0, 0],  stereo_arr[0, 1],  stereo_arr[0, 2],
+                c="orange", s=50, zorder=6, marker="o", label="Stereo est start")
+    ax3.scatter(stereo_arr[-1, 0], stereo_arr[-1, 1], stereo_arr[-1, 2],
+                c="orange", s=50, zorder=6, marker="D", label="Stereo est end")
     ax3.set_xlabel("X [m]", color="white", fontsize=8)
     ax3.set_ylabel("Y [m]", color="white", fontsize=8)
     ax3.set_zlabel("Z [m] (up)", color="white", fontsize=8)
@@ -575,44 +607,57 @@ def save_comparison_3d(
                loc="upper left")
 
     # ── top-down x-y ──────────────────────────────────────────────────────
-    # TUM-VI world frame: X-Y is the horizontal plane, Z is up.
     ax_xy = fig.add_subplot(132)
     ax_xy.set_facecolor("#111111")
     ax_xy.tick_params(colors="white", labelsize=7)
     for s in ax_xy.spines.values(): s.set_edgecolor("#333333")
     if gt is not None:
-        ax_xy.plot(gt[:, 0], gt[:, 1], color="#A5D6A7", lw=1.0,
-                   ls="--", alpha=0.9, label="GT")
+        if full_gt:
+            ax_xy.plot(gt[:, 0], gt[:, 1], color="#A5D6A7", lw=1.0,
+                       ls="--", alpha=0.9, label="GT")
+        ax_xy.scatter(float(gt[0,  0]), float(gt[0,  1]),
+                      c="lime", s=80, zorder=7, marker="*", label="GT start")
+        ax_xy.scatter(float(gt[-1, 0]), float(gt[-1, 1]),
+                      c="gold", s=80, zorder=7, marker="*", label="GT end")
     ax_xy.plot(mono_arr[:, 0],   mono_arr[:, 1],   color="#4FC3F7",
-               lw=0.9, label="Mono (Sim3)")
+               lw=0.9, label="Mono")
+    ax_xy.scatter(mono_arr[0, 0],  mono_arr[0, 1],  c="cyan",   s=50,
+                  zorder=6, marker="o", label="Mono start")
+    ax_xy.scatter(mono_arr[-1, 0], mono_arr[-1, 1], c="cyan",   s=50,
+                  zorder=6, marker="D", label="Mono end")
     ax_xy.plot(stereo_arr[:, 0], stereo_arr[:, 1], color="#EF9A9A",
-               lw=0.9, label="Stereo (SE3)")
+               lw=0.9, label="Stereo")
+    ax_xy.scatter(stereo_arr[0, 0],  stereo_arr[0, 1],  c="orange", s=50,
+                  zorder=6, marker="o", label="Stereo start")
+    ax_xy.scatter(stereo_arr[-1, 0], stereo_arr[-1, 1], c="orange", s=50,
+                  zorder=6, marker="D", label="Stereo end")
     ax_xy.set_xlabel("x [m]", color="white", fontsize=8)
     ax_xy.set_ylabel("y [m]", color="white", fontsize=8)
     ax_xy.set_title("Top-down  x–y", color="white", fontsize=9)
     ax_xy.set_aspect("equal", adjustable="datalim")
     ax_xy.legend(fontsize=7, facecolor="#222222", labelcolor="white")
 
-    # ── z (height) over frames ────────────────────────────────────────
+    # ── z (height) over frames ────────────────────────────────────────────
     ax_z = fig.add_subplot(133)
     ax_z.set_facecolor("#111111")
     ax_z.tick_params(colors="white", labelsize=7)
     for s in ax_z.spines.values(): s.set_edgecolor("#333333")
-    if gt is not None:
-        ax_z.plot(gt[:, 2], color="#A5D6A7", lw=0.8, ls="--",
-                  alpha=0.9, label="GT z")
-    ax_z.plot(mono_arr[:, 2],   color="#4FC3F7", lw=0.8,
-              label="Mono z (Sim3)")
-    ax_z.plot(stereo_arr[:, 2], color="#EF9A9A", lw=0.8,
-              label="Stereo z (SE3)")
+    if full_gt:
+        if gt is not None:
+            ax_z.plot(gt[:, 2], color="#A5D6A7", lw=0.8, ls="--", alpha=0.9, label="GT z")
+        ax_z.plot(mono_arr[:, 2],   color="#4FC3F7", lw=0.8, label="Mono z")
+        ax_z.plot(stereo_arr[:, 2], color="#EF9A9A", lw=0.8, label="Stereo z")
+        ax_z.set_title("Height over time", color="white", fontsize=9)
+    else:
+        # Mono has no metric scale → only show stereo z (meaningful)
+        ax_z.plot(stereo_arr[:, 2], color="#EF9A9A", lw=0.9, label="Stereo z")
+        ax_z.axhline(stereo_arr[0, 2], color="#A5D6A7", lw=0.7, ls="--",
+                     alpha=0.7, label=f"start z={stereo_arr[0,2]:.2f}m")
+        ax_z.set_title("Stereo height over time  (start-aligned)", color="white", fontsize=9)
     ax_z.set_xlabel("frame", color="white", fontsize=8)
     ax_z.set_ylabel("z / height [m]", color="white", fontsize=8)
-    ax_z.set_title("Height over time", color="white", fontsize=9)
     ax_z.legend(fontsize=7, facecolor="#222222", labelcolor="white")
 
-    title_str = (f"Mono vs Stereo VO — {seq_name}  |  "
-                 f"Mono ATE={mono_ate:.3f}m (Sim3)  "
-                 f"Stereo ATE={stereo_ate:.3f}m (SE3)")
     fig.suptitle(title_str, color="white", fontsize=11, fontweight="bold")
     plt.tight_layout(rect=[0, 0, 1, 0.94])
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)

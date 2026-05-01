@@ -29,8 +29,12 @@ class DisparityConfig:
     min_depth:       float = 0.3     # TUM VI room: nothing closer than 30cm
     max_depth:       float = 6.0     # room2 is ~6m diameter
     min_disparity:   float = 2.0     # reject near-zero disparity
+    # WLS post-filter tuning
+    wls_lambda:      int   = 8000    # higher = smoother disparity
+    wls_sigma:       float = 1.5     # colour-space smoothness
     # Patch size for robust depth at keypoints
     patch_radius:    int   = 2       # median over (2r+1)^2 patch
+    min_disp_pixels: int   = 3       # min valid-disparity pixels in patch for point creation
 
 
 class DisparityComputer:
@@ -73,8 +77,8 @@ class DisparityComputer:
             self._right_m = cv2.ximgproc.createRightMatcher(self._matcher)
             self._wls     = cv2.ximgproc.createDisparityWLSFilter(
                 self._matcher)
-            self._wls.setLambda(8000)
-            self._wls.setSigmaColor(1.5)
+            self._wls.setLambda(self.cfg.wls_lambda)
+            self._wls.setSigmaColor(self.cfg.wls_sigma)
             self._use_wls = True
         except AttributeError:
             self._use_wls = False
@@ -139,7 +143,7 @@ class DisparityComputer:
 
             patch = disp[v-r:v+r+1, u-r:u+r+1]
             good  = patch[patch > self.cfg.min_disparity]
-            if len(good) < 3:
+            if len(good) < self.cfg.min_disp_pixels:
                 continue
             d = float(np.median(good))
 

@@ -54,6 +54,15 @@ class MonoVOConfig:
     max_velocity:         float = 0.5    # max per-frame translation [m]
     max_cvm_frames:       int   = 3      # CVM extrapolation limit
     # ── misc ───────────────────────────────────────────────────────────────
+    use_clahe:            bool  = False  # CLAHE contrast enhancement before tracking
+    # E-matrix reinit has cheirality ambiguity for 180° rotations — disable
+    # for corridor-like sequences where the camera turns around.
+    use_e_reinit:         bool  = True
+    # Minimum camera-frame z accepted by _get_scene_depth().  Raise for
+    # rotation-heavy close-range sequences (room2) to exclude very near VD
+    # points that are hard to re-track under rotation; keep low (0.1m) for
+    # translation-dominant sequences (corridor3) for accurate depth estimation.
+    scene_depth_lo_m:     float = 0.1
     verbose:              bool  = False
 
 
@@ -104,7 +113,9 @@ class MonoVO:
 
         # ── E-matrix re-init anchor ───────────────────────────────────────
         self._anchor_img:    Optional[np.ndarray] = None
-        self._anchor_pts:    Optional[np.ndarray] = None
+        self._anchor_pts:    Optional[np.ndarray] = None   # detect_grid features for E-matrix
+        self._anchor_map2d:  Optional[np.ndarray] = None   # map 2D positions for PnP primary
+        self._anchor_map3d:  Optional[np.ndarray] = None   # map 3D world points for PnP primary
         self._anchor_T:      Optional[np.ndarray] = None
         self._anchor_active: bool                 = False
 
@@ -112,11 +123,15 @@ class MonoVO:
         self._timestamps: List[float]      = []
         self._poses:      List[np.ndarray] = []
 
+        self._clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+
     # ── public API ──────────────────────────────────────────────────────────
 
     def process(self, img: np.ndarray,
                 timestamp: float = 0.0) -> Optional[np.ndarray]:
         self._frame_id += 1
+        if self.cfg.use_clahe:
+            img = self._clahe.apply(img)
         if not self._initialised:
             return self._try_init(img, timestamp)
         return self._track(img, timestamp)
@@ -246,7 +261,9 @@ class MonoVO:
 
             if self._n_consec_fails == 1:
                 self._anchor_img    = self._prev_img.copy()
-                self._anchor_pts    = self.tracker.detect_grid(self._prev_img)
+                self._anchor_pts    = self.tracker.detect_grid(self._prev_img)  # E-matrix
+                self._anchor_map2d  = self._map2d.copy()   # PnP primary (aligned w/ map3d)
+                self._anchor_map3d  = self._map3d.copy()   # PnP primary (world-frame 3D)
                 self._anchor_T      = self._T_cur.copy()
                 self._anchor_active = True
 
@@ -459,13 +476,60 @@ class MonoVO:
 
     def _try_reinit(self, img: np.ndarray, ts: float) -> bool:
         """
-        Track anchor-frame keypoints into the current frame, estimate E,
-        triangulate, and snap back to world-frame scale using the current
-        scene depth estimate.
+        Recover pose after consecutive tracking failures.
+
+        Primary path: direct 3D-PnP using _anchor_map2d/_anchor_map3d (world-
+        frame 3D points tracked via LK into the current frame).  No cheirality
+        ambiguity — correct for any rotation including 180° corridor turns.
+
+        Fallback: E-matrix + scene-depth scale snap using _anchor_pts (detect_
+        grid features, ~300 pts).  Disabled via use_e_reinit=False for sequences
+        with large rotations (E-matrix cheirality picks wrong decomposition).
         """
         if (self._anchor_img is None
-                or self._anchor_pts is None
-                or self._anchor_T  is None
+                or self._anchor_T  is None):
+            return False
+
+        # ── Primary: direct 3D-PnP ───────────────────────────────────────────
+        if (self._anchor_map2d is not None
+                and self._anchor_map3d is not None
+                and len(self._anchor_map2d) >= 8):
+            pts_cur_pnp, ok_pnp = self._lk_track(
+                self._anchor_img, img, self._anchor_map2d, extra_levels=2)
+            if len(pts_cur_pnp) >= 8:
+                pts3d_ok = self._anchor_map3d[ok_pnp]
+                R_d, t_d, inl_d = pnp_ransac(
+                    pts3d_ok, pts_cur_pnp, self.K, self.dist,
+                    min_inliers=8, ransac_th=self.cfg.pnp_ransac_th * 1.5,
+                )
+                if R_d is not None:
+                    T_cw_d = Rt_to_T(R_d, t_d)
+                    T_wc_d = invert_T(T_cw_d)
+                    vel    = float(np.linalg.norm(
+                        T_wc_d[:3, 3] - self._anchor_T[:3, 3]))
+                    if vel < self.cfg.max_velocity * 10:
+                        self._T_prev         = self._anchor_T.copy()
+                        self._T_cur          = T_wc_d
+                        self._map3d          = pts3d_ok[inl_d]
+                        self._map2d          = pts_cur_pnp[inl_d].astype(np.float32)
+                        self._last_delta_T   = invert_T(self._T_prev) @ self._T_cur
+                        self._has_delta      = True
+                        self._n_consec_fails = 0
+                        self._anchor_active  = False
+                        self.n_e_reinits    += 1
+                        self._kf_img = self._anchor_img.copy()
+                        self._kf_T   = self._anchor_T.copy()
+                        self._refresh_map2d(img)
+                        self._record(ts)
+                        self._log(f"[{self._frame_id:04d}] PnP-reinit OK  "
+                                  f"n={inl_d.sum()}")
+                        return True
+
+        # ── Fallback: E-matrix + scene-depth scale snap ───────────────────────
+        if not self.cfg.use_e_reinit:
+            return False
+
+        if (self._anchor_pts is None
                 or len(self._anchor_pts) < 20):
             return False
 
@@ -505,7 +569,6 @@ class MonoVO:
         if med_depth_unit < 1e-6:
             return False
 
-        # Scale to world using actual scene depth (preserves world scale)
         world_depth = self._get_scene_depth()
         scale       = world_depth / med_depth_unit
         pts3d_v     = pts3d_v  * scale
@@ -647,10 +710,7 @@ class MonoVO:
             R_cw, t_cw = cam_from_world(self._T_cur)
             pts_cam = (R_cw @ self._map3d.T).T + t_cw
             z = pts_cam[:, 2]
-            # Clamp to [0.3×, 2.5×] expected_depth to prevent runaway depth
-            # from near-wall VD augments (cause overshoot) or drifting KF
-            # triangulations (cause undershoot cascade).
-            d_lo = max(0.1, 0.3 * self.cfg.expected_depth)
+            d_lo = max(0.05, self.cfg.scene_depth_lo_m)
             d_hi = min(20.0, 2.5 * self.cfg.expected_depth)
             vis = z[(z > d_lo) & (z < d_hi)]
             if len(vis) >= 3:

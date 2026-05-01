@@ -44,7 +44,7 @@ _SHOW = 0
 SEQUENCES = [
     "config/tumvi_room2.yaml",
     "config/tumvi_corridor3.yaml",
-    "config/tumvi_outdoors5.yaml",
+    # "config/tumvi_outdoors5.yaml",
 ]
 
 # room2 has full GT → ATE.  corridor3/outdoors5 → start-end drift only.
@@ -80,7 +80,8 @@ MONO_CONFIGS = {
         max_map_pts           = 600,
         min_parallax_px       = 8.0,
         max_parallax_px       = 40.0,
-        expected_depth        = 3.0,
+        expected_depth        = 2.0,
+        scene_depth_lo_m      = 0.6,    # exclude <0.6m VD pts (hard to track under rotation)
         pnp_min_inliers       = 12,
         pnp_ransac_th         = 6.0,
         reproj_thresh         = 4.0,
@@ -94,20 +95,22 @@ MONO_CONFIGS = {
     ),
     "corridor3": MonoVOConfig(
         feature               = _FEAT_MONO,
-        min_tracked_pts       = 50,
+        min_tracked_pts       = 80,     # keep map denser → fewer VD depletions
         max_map_pts           = 600,
         min_parallax_px       = 4.0,
         max_parallax_px       = 60.0,
-        expected_depth        = 3.0,
+        expected_depth        = 5.0,    # corridor > room; raises d_hi clip to 12.5m
         pnp_min_inliers       = 12,
         pnp_ransac_th         = 6.0,
         reproj_thresh         = 4.0,
         use_ba                = True,
         max_velocity          = 1.0,
-        kf_min_parallax_px    = 15.0,
+        kf_min_parallax_px    = 10.0,   # more frequent KF → more real-geometry pts
         kf_max_parallax_px    = 80.0,
         kf_min_baseline_ratio = 0.03,
         max_cvm_frames        = 3,
+        use_clahe             = True,   # enhance contrast for homogeneous walls
+        use_e_reinit          = False,  # 180° turn: E-matrix cheirality picks wrong rotation
         verbose               = False,
     ),
     "outdoors5": MonoVOConfig(
@@ -153,21 +156,28 @@ STEREO_CONFIGS = {
     "corridor3": StereoVOConfig(
         feature         = _FEAT,
         disparity       = DisparityConfig(
-            num_disparities = 128,
-            block_size      = 11,
+            num_disparities = 64,
+            block_size      = 21,
             min_depth       = 0.5,
-            max_depth       = 8.0,
-            min_disparity   = 1.0,
+            max_depth       = 10.0,
+            min_disparity   = 0.5,
             patch_radius    = 3,
+            disp12_diff     = 3,
+            uniqueness      = 10,
+            min_disp_pixels = 8,        # only add well-measured 3D points
+            wls_lambda      = 12000,    # more smoothing for corridor walls
+            wls_sigma       = 1.5,
         ),
-        min_tracked_pts = 150,
-        max_map_pts     = 600,
-        pnp_min_inliers = 20,
-        pnp_ransac_th   = 2.0,
-        reproj_thresh   = 2.0,
-        use_ba          = True,
-        max_velocity    = 1.0,
-        verbose         = False,
+        min_tracked_pts  = 100,
+        max_map_pts      = 800,         # more constraints for heading estimation
+        pnp_min_inliers  = 15,
+        pnp_ransac_th    = 3.0,
+        reproj_thresh    = 2.5,
+        use_ba           = True,
+        max_velocity     = 1.0,
+        use_depth_update = False,       # noisy SGBM on corridor walls corrupts 3D map
+        use_clahe        = True,
+        verbose          = False,
     ),
     "outdoors5": StereoVOConfig(
         feature         = _FEAT,
@@ -242,6 +252,48 @@ def compute_rpe_d1_on_consecutive_gt(loader, poses):
     te = np.array(trans_all)
     re = np.array(rot_all)
     return float(np.sqrt((te ** 2).mean())), float(np.sqrt((re ** 2).mean()))
+
+
+def compute_local_ate_blocks(loader, poses, align_mode="se3"):
+    """
+    For corridor3/outdoors5: split GT into start and end contiguous blocks
+    (separated by the gap when camera leaves mocap volume) and compute ATE
+    within each block independently.
+
+    Returns dict with keys: start_ate, end_ate, start_n, end_n.
+    """
+    all_est, all_gt, all_idx = [], [], []
+    for i, frame in enumerate(loader):
+        if i >= len(poses):
+            break
+        if frame.T_world_cam0 is not None:
+            all_est.append(poses[i])
+            all_gt.append(frame.T_world_cam0)
+            all_idx.append(i)
+
+    if len(all_idx) < 4:
+        return {"start_ate": float("nan"), "end_ate": float("nan"),
+                "start_n": len(all_idx), "end_n": 0}
+
+    # Find the largest gap in frame index — that's the split point
+    gaps = [(all_idx[k] - all_idx[k - 1], k) for k in range(1, len(all_idx))]
+    split = max(gaps, key=lambda x: x[0])[1]
+
+    def _block_ate(est, gt):
+        if len(gt) < 10:
+            return float("nan")
+        try:
+            r = align_and_evaluate(est, gt, align=align_mode)
+            return r["ate_rmse"]
+        except Exception:
+            return float("nan")
+
+    return {
+        "start_ate": _block_ate(all_est[:split], all_gt[:split]),
+        "end_ate":   _block_ate(all_est[split:], all_gt[split:]),
+        "start_n":   split,
+        "end_n":     len(all_idx) - split,
+    }
 
 
 def collect_gt_timestamps(loader, poses, timestamps):
@@ -350,10 +402,22 @@ def save_plot(cfg, loader, mono_vo, stereo_vo,
 
     ax = axes[0]
     ax.plot(gt_arr[:, 0],    gt_arr[:, 1],    "g--", lw=1.5, label="GT")
+    ax.scatter(gt_arr[0,  0], gt_arr[0,  1], c="lime", s=100, zorder=6,
+               marker="*", label="GT start")
+    ax.scatter(gt_arr[-1, 0], gt_arr[-1, 1], c="gold", s=100, zorder=6,
+               marker="*", label="GT end")
     ax.plot(mono_al[:, 0],   mono_al[:, 1],   "b-",  lw=1.0, alpha=0.8,
             label=f"Mono VO (Sim3, ATE={mono_result['ate_rmse']:.3f}m)")
+    ax.scatter(mono_al[0,  0], mono_al[0,  1], c="cyan",   s=60, zorder=5,
+               marker="o", label="Mono est start")
+    ax.scatter(mono_al[-1, 0], mono_al[-1, 1], c="cyan",   s=60, zorder=5,
+               marker="D", label="Mono est end")
     ax.plot(stereo_al[:, 0], stereo_al[:, 1], "r-",  lw=1.2,
             label=f"Stereo VO (SE3, ATE={stereo_result['ate_rmse']:.3f}m)")
+    ax.scatter(stereo_al[0,  0], stereo_al[0,  1], c="orange", s=60, zorder=5,
+               marker="o", label="Stereo est start")
+    ax.scatter(stereo_al[-1, 0], stereo_al[-1, 1], c="orange", s=60, zorder=5,
+               marker="D", label="Stereo est end")
     ax.set_xlabel("x [m]"); ax.set_ylabel("y [m]")
     ax.set_title("Top-down (aligned)"); ax.legend(fontsize=8)
     ax.set_aspect("equal")
@@ -387,125 +451,200 @@ def save_plot(cfg, loader, mono_vo, stereo_vo,
     print(f"  Saved {path}")
 
 
-def save_mono_plot(cfg, loader, mono_vo, mono_time, out_dir):
-    """Save mono VO 2-D trajectory — raw + Sim3-aligned overlay."""
-    mono_est = np.array([T[:3, 3] for T in mono_vo.trajectory[1]])
-    gt_arr   = np.array([f.T_world_cam0[:3, 3]
-                         for f in loader if f.T_world_cam0 is not None])
-    ts = np.array(mono_vo.trajectory[0]); ts -= ts[0]
-
-    mono_aligned, ate_val = None, float("nan")
-    est_poses, gt_poses = collect_gt(loader, mono_vo.trajectory[1])
-    if len(gt_poses) > 10:
-        result       = align_and_evaluate(est_poses, gt_poses, align="sim3")
-        mono_aligned = np.array([T[:3, 3] for T in result["traj_aligned"]])
-        ate_val      = result["ate_rmse"]
-
+def save_mono_plot(cfg, loader, mono_vo, mono_time, out_dir, full_gt: bool = True):
+    """Save mono VO 2-D trajectory.
+    full_gt=True  → Sim3-aligned + ATE  (room2 style)
+    full_gt=False → start-aligned + start-end drift  (corridor3/outdoors5)
+    """
+    ts  = np.array(mono_vo.trajectory[0]); ts -= ts[0]
     fps = len(loader) / mono_time if mono_time > 0 else 0.0
+
+    # ── gather GT ─────────────────────────────────────────────────────────────
+    all_gt_poses = [f.T_world_cam0 for f in loader if f.T_world_cam0 is not None]
+    gt_arr = np.array([T[:3, 3] for T in all_gt_poses]) if all_gt_poses else np.empty((0, 3))
+
     fig, (ax, ax2) = plt.subplots(1, 2, figsize=(14, 6))
 
-    if len(gt_arr):
-        ax.plot(gt_arr[:, 0], gt_arr[:, 1], "g--", lw=1.5, label="GT")
-    if mono_aligned is not None:
-        ax.plot(mono_aligned[:, 0], mono_aligned[:, 1], "b-", lw=1.2,
-                label=f"Mono VO (Sim3-aligned, ATE={ate_val:.3f}m)")
-        ax.scatter(mono_aligned[0,  0], mono_aligned[0,  1], c="blue", s=40, zorder=5,
-                   label="start")
-        ax.scatter(mono_aligned[-1, 0], mono_aligned[-1, 1], c="red",  s=40, zorder=5,
-                   label="end")
+    if full_gt:
+        # ── Sim3-aligned ATE path (room2) ─────────────────────────────────────
+        mono_aligned, ate_val = None, float("nan")
+        est_poses, gt_poses   = collect_gt(loader, mono_vo.trajectory[1])
+        if len(gt_poses) > 10:
+            result       = align_and_evaluate(est_poses, gt_poses, align="sim3")
+            mono_aligned = np.array([T[:3, 3] for T in result["traj_aligned"]])
+            ate_val      = result["ate_rmse"]
+
+        if len(gt_arr):
+            ax.plot(gt_arr[:, 0], gt_arr[:, 1], "g--", lw=1.5, label="GT")
+            ax.scatter(gt_arr[0,  0], gt_arr[0,  1], c="lime", s=100, zorder=6,
+                       marker="*", label="GT start")
+            ax.scatter(gt_arr[-1, 0], gt_arr[-1, 1], c="gold", s=100, zorder=6,
+                       marker="*", label="GT end")
+        if mono_aligned is not None:
+            ax.plot(mono_aligned[:, 0], mono_aligned[:, 1], "b-", lw=1.2,
+                    label=f"Mono VO (Sim3-aligned, ATE={ate_val:.3f}m)")
+            ax.scatter(mono_aligned[0,  0], mono_aligned[0,  1], c="blue", s=60,
+                       zorder=5, marker="o", label="est start")
+            ax.scatter(mono_aligned[-1, 0], mono_aligned[-1, 1], c="red",  s=60,
+                       zorder=5, marker="D", label="est end")
+        ax.set_title("Top-down x–y  (Sim3-aligned)")
+
+        if mono_aligned is not None:
+            ax2.plot(ts[:len(mono_aligned)], mono_aligned[:, 2], "b-", lw=0.9, label="Mono VO z")
+        if len(gt_arr):
+            gt_ts = np.linspace(0, ts[-1], len(gt_arr))
+            ax2.plot(gt_ts, gt_arr[:, 2], "g--", lw=1.0, label="GT z")
+        ax2.set_xlabel("time [s]"); ax2.set_ylabel("z [m]")
+        ax2.set_title("Z height over time  (Sim3-aligned)")
+        ax2.legend(fontsize=8)
+
+        plt.suptitle(f"Monocular VO — {cfg.sequence_name}  |  "
+                     f"failures={mono_vo.n_failures}   ATE={ate_val:.3f}m   fps={fps:.0f}",
+                     fontsize=11)
+    else:
+        # ── start-aligned drift path (corridor3/outdoors5) ────────────────────
+        drift_m = float("nan")
+        if len(all_gt_poses) >= 2:
+            drift_m = start_end_drift(mono_vo.trajectory[1],
+                                      [all_gt_poses[0], all_gt_poses[-1]])
+
+        # Apply start-pose alignment: shift trajectory so frame-0 = GT frame-0
+        T_a = all_gt_poses[0] @ np.linalg.inv(mono_vo.trajectory[1][0]) \
+              if all_gt_poses else np.eye(4)
+        mono_sa = np.array([(T_a @ T)[:3, 3] for T in mono_vo.trajectory[1]])
+
+        ax.plot(mono_sa[:, 0], mono_sa[:, 1], "b-", lw=1.2,
+                label=f"Mono VO (start-aligned, drift={drift_m:.2f}m)")
+        ax.scatter(mono_sa[0,  0], mono_sa[0,  1], c="blue", s=60, zorder=5, marker="o",
+                   label="est start")
+        ax.scatter(mono_sa[-1, 0], mono_sa[-1, 1], c="red",  s=60, zorder=5, marker="D",
+                   label=f"est end  (drift={drift_m:.2f}m)")
+        if len(gt_arr) >= 1:
+            ax.scatter(gt_arr[0, 0], gt_arr[0, 1], c="lime",  s=100, zorder=6, marker="*",
+                       label="GT start")
+        if len(gt_arr) >= 2:
+            ax.scatter(gt_arr[-1, 0], gt_arr[-1, 1], c="gold", s=100, zorder=6, marker="*",
+                       label="GT end")
+        ax.set_title("Top-down x–y  (start-aligned to GT)")
+
+        ax2.plot(ts, mono_sa[:, 0], "b-",  lw=0.8, label="x")
+        ax2.plot(ts, mono_sa[:, 1], "r-",  lw=0.8, label="y")
+        ax2.set_xlabel("time [s]"); ax2.set_ylabel("[m]")
+        ax2.set_title("x–y position over time  (start-aligned)")
+        ax2.legend(fontsize=8)
+
+        plt.suptitle(f"Monocular VO — {cfg.sequence_name}  |  "
+                     f"failures={mono_vo.n_failures}   "
+                     f"start-end drift={drift_m:.3f}m   fps={fps:.0f}",
+                     fontsize=11)
+
     ax.set_xlabel("x [m]"); ax.set_ylabel("y [m]")
-    ax.set_title("Top-down x–y  (Sim3-aligned)  ← main result")
     ax.legend(fontsize=8); ax.set_aspect("equal")
-
-    if mono_aligned is not None:
-        ax2.plot(ts[:len(mono_aligned)], mono_aligned[:, 2], "b-", lw=0.9,
-                 label="Mono VO z (Sim3-aligned)")
-    if len(gt_arr):
-        gt_ts = np.linspace(0, ts[-1], len(gt_arr))
-        ax2.plot(gt_ts, gt_arr[:, 2], "g--", lw=1.0, label="GT z")
-    ax2.set_xlabel("time [s]"); ax2.set_ylabel("z [m]")
-    ax2.set_title("Z height over time  (Sim3-aligned)")
-    ax2.legend(fontsize=8)
-
-    plt.suptitle(
-        f"Monocular VO — {cfg.sequence_name}  |  "
-        f"failures={mono_vo.n_failures}   ATE={ate_val:.3f}m   fps={fps:.0f}",
-        fontsize=11,
-    )
     plt.tight_layout()
     path = os.path.join(out_dir, "mono_traj.png")
     plt.savefig(path, dpi=120); plt.close()
     print(f"  Saved {path}")
 
 
-def save_stereo_plot(cfg, loader, stereo_vo, stereo_time, out_dir):
+def save_stereo_plot(cfg, loader, stereo_vo, stereo_time, out_dir, full_gt: bool = True):
+    """Save stereo VO 2-D trajectory.
+    full_gt=True  → SE3-aligned + ATE over time  (room2 style)
+    full_gt=False → start-aligned + start-end drift  (corridor3/outdoors5)
     """
-    Save stereo VO 2-D trajectory.
-    When full GT is available: shows SE3-aligned x-y top-down + ATE over time
-    Raw x-z (camera-frame optical axis) is intentionally NOT plotted — it uses
-    a different coordinate frame from the gravity-aligned GT and is misleading
-    """
-    gt_arr = np.array([f.T_world_cam0[:3, 3]
-                       for f in loader if f.T_world_cam0 is not None])
     ts  = np.array(stereo_vo.trajectory[0]); ts -= ts[0]
     fps = len(loader) / stereo_time if stereo_time > 0 else 0.0
 
-    # SE3 alignment when full GT is available
-    est_poses, gt_poses = collect_gt(loader, stereo_vo.trajectory[1])
-    stereo_aligned, ate_val, ate_errors = None, float("nan"), None
-    if len(gt_poses) > 10:
-        result         = align_and_evaluate(est_poses, gt_poses, align="se3")
-        stereo_aligned = np.array([T[:3, 3] for T in result["traj_aligned"]])
-        ate_val        = result["ate_rmse"]
-        ate_errors     = result.get("errors", None)
+    all_gt_poses = [f.T_world_cam0 for f in loader if f.T_world_cam0 is not None]
+    gt_arr = np.array([T[:3, 3] for T in all_gt_poses]) if all_gt_poses else np.empty((0, 3))
 
     fig, (ax, ax2) = plt.subplots(1, 2, figsize=(14, 6))
 
-    if stereo_aligned is not None:
-        if len(gt_arr):
-            ax.plot(gt_arr[:, 0], gt_arr[:, 1], "g--", lw=1.2, label="GT")
-        ax.plot(stereo_aligned[:, 0], stereo_aligned[:, 1], "r-", lw=1.0,
-                label=f"Stereo VO (SE3-aligned, ATE={ate_val:.3f}m)")
-        ax.scatter(stereo_aligned[0,  0], stereo_aligned[0,  1], c="blue", s=40, zorder=5,
-                   label="start")
-        ax.scatter(stereo_aligned[-1, 0], stereo_aligned[-1, 1], c="red",  s=40, zorder=5,
-                   label="end")
-        ax.set_title("Top-down x–y  (SE3-aligned, metric)")
+    if full_gt:
+        # ── SE3-aligned ATE path (room2) ──────────────────────────────────────
+        est_poses, gt_poses = collect_gt(loader, stereo_vo.trajectory[1])
+        stereo_aligned, ate_val, ate_errors = None, float("nan"), None
+        if len(gt_poses) > 10:
+            result         = align_and_evaluate(est_poses, gt_poses, align="se3")
+            stereo_aligned = np.array([T[:3, 3] for T in result["traj_aligned"]])
+            ate_val        = result["ate_rmse"]
+            ate_errors     = result.get("errors", None)
+
+        if stereo_aligned is not None:
+            if len(gt_arr):
+                ax.plot(gt_arr[:, 0], gt_arr[:, 1], "g--", lw=1.2, label="GT")
+                ax.scatter(gt_arr[0,  0], gt_arr[0,  1], c="lime", s=100, zorder=6,
+                           marker="*", label="GT start")
+                ax.scatter(gt_arr[-1, 0], gt_arr[-1, 1], c="gold", s=100, zorder=6,
+                           marker="*", label="GT end")
+            ax.plot(stereo_aligned[:, 0], stereo_aligned[:, 1], "r-", lw=1.0,
+                    label=f"Stereo VO (SE3-aligned, ATE={ate_val:.3f}m)")
+            ax.scatter(stereo_aligned[0,  0], stereo_aligned[0,  1], c="blue", s=60,
+                       zorder=5, marker="o", label="est start")
+            ax.scatter(stereo_aligned[-1, 0], stereo_aligned[-1, 1], c="red",  s=60,
+                       zorder=5, marker="D", label="est end")
+            ax.set_title("Top-down x–y  (SE3-aligned, metric)")
+        else:
+            raw = np.array([T[:3, 3] for T in stereo_vo.trajectory[1]])
+            ax.plot(raw[:, 0], raw[:, 1], "r-", lw=1.0, label="Stereo VO (raw)")
+            ax.set_title("Top-down x–y  (raw)")
+
+        if ate_errors is not None:
+            aligned_ts = collect_gt_timestamps(loader, stereo_vo.trajectory[1], ts)
+            if len(aligned_ts):
+                aligned_ts = aligned_ts - aligned_ts[0]
+            n = min(len(aligned_ts), len(ate_errors))
+            if n:
+                ax2.plot(aligned_ts[:n], ate_errors[:n], "r-", lw=0.8, label="Stereo ATE")
+            ax2.set_xlabel("time [s]"); ax2.set_ylabel("ATE [m]")
+            ax2.set_title("Position error over time  (SE3-aligned)")
+            ax2.set_ylim(bottom=0)
+        else:
+            raw = np.array([T[:3, 3] for T in stereo_vo.trajectory[1]])
+            ax2.plot(ts, raw[:, 0], "r-", lw=0.8, label="x")
+            ax2.plot(ts, raw[:, 1], "b-", lw=0.8, label="y")
+            ax2.set_xlabel("time [s]"); ax2.set_ylabel("[m]")
+            ax2.set_title("Raw x-y over time")
+
+        plt.suptitle(f"Stereo VO — {cfg.sequence_name}  |  "
+                     f"failures={stereo_vo.n_failures}   ATE={ate_val:.3f}m   "
+                     f"scale=1.000 metric   fps={fps:.0f}", fontsize=11)
     else:
-        # Drift sequences: raw x-y without alignment
-        stereo_raw = np.array([T[:3, 3] for T in stereo_vo.trajectory[1]])
-        ax.plot(stereo_raw[:, 0], stereo_raw[:, 1], "r-", lw=1.0,
-                label="Stereo VO (raw)")
-        ax.set_title("Top-down x–y  (raw, no GT)")
+        # ── start-aligned drift path (corridor3/outdoors5) ────────────────────
+        drift_m = float("nan")
+        if len(all_gt_poses) >= 2:
+            drift_m = start_end_drift(stereo_vo.trajectory[1],
+                                      [all_gt_poses[0], all_gt_poses[-1]])
+
+        T_a = all_gt_poses[0] @ np.linalg.inv(stereo_vo.trajectory[1][0]) \
+              if all_gt_poses else np.eye(4)
+        stereo_sa = np.array([(T_a @ T)[:3, 3] for T in stereo_vo.trajectory[1]])
+
+        ax.plot(stereo_sa[:, 0], stereo_sa[:, 1], "r-", lw=1.0,
+                label=f"Stereo VO (start-aligned, drift={drift_m:.2f}m)")
+        ax.scatter(stereo_sa[0,  0], stereo_sa[0,  1], c="blue", s=60, zorder=5, marker="o",
+                   label="est start")
+        ax.scatter(stereo_sa[-1, 0], stereo_sa[-1, 1], c="red",  s=60, zorder=5, marker="D",
+                   label=f"est end  (drift={drift_m:.2f}m)")
+        if len(gt_arr) >= 1:
+            ax.scatter(gt_arr[0, 0], gt_arr[0, 1], c="lime",  s=100, zorder=6, marker="*",
+                       label="GT start")
+        if len(gt_arr) >= 2:
+            ax.scatter(gt_arr[-1, 0], gt_arr[-1, 1], c="gold", s=100, zorder=6, marker="*",
+                       label="GT end")
+        ax.set_title("Top-down x–y  (start-aligned to GT)")
+
+        ax2.plot(ts, stereo_sa[:, 0], "r-", lw=0.8, label="x")
+        ax2.plot(ts, stereo_sa[:, 1], "b-", lw=0.8, label="y")
+        ax2.set_xlabel("time [s]"); ax2.set_ylabel("[m]")
+        ax2.set_title("x–y position over time  (start-aligned)")
+
+        plt.suptitle(f"Stereo VO — {cfg.sequence_name}  |  "
+                     f"failures={stereo_vo.n_failures}   "
+                     f"start-end drift={drift_m:.3f}m   fps={fps:.0f}", fontsize=11)
+
     ax.set_xlabel("x [m]"); ax.set_ylabel("y [m]")
     ax.legend(fontsize=8); ax.set_aspect("equal")
-
-    if ate_errors is not None:
-        aligned_ts = collect_gt_timestamps(
-            loader, stereo_vo.trajectory[1], ts)
-        if len(aligned_ts) > 0:
-            aligned_ts = aligned_ts - aligned_ts[0]
-        n = min(len(aligned_ts), len(ate_errors))
-        if n > 0:
-            ax2.plot(aligned_ts[:n], ate_errors[:n], "r-", lw=0.8,
-                     label="Stereo ATE")
-        ax2.set_xlabel("time [s]"); ax2.set_ylabel("ATE [m]")
-        ax2.set_title("Position error over time  (SE3-aligned)")
-        ax2.set_ylim(bottom=0)
-    else:
-        stereo_raw = np.array([T[:3, 3] for T in stereo_vo.trajectory[1]])
-        ax2.plot(ts, stereo_raw[:, 0], "r-", lw=0.8, label="x")
-        ax2.plot(ts, stereo_raw[:, 1], "b-", lw=0.8, label="y")
-        ax2.set_xlabel("time [s]"); ax2.set_ylabel("[m]")
-        ax2.set_title("Raw x-y over time")
     ax2.legend(fontsize=8)
-
-    plt.suptitle(
-        f"Stereo VO — {cfg.sequence_name}  |  "
-        f"failures={stereo_vo.n_failures}   ATE={ate_val:.3f}m   "
-        f"scale=1.000 metric   fps={fps:.0f}",
-        fontsize=11,
-    )
     plt.tight_layout()
     path = os.path.join(out_dir, "stereo_traj.png")
     plt.savefig(path, dpi=120); plt.close()
@@ -537,12 +676,22 @@ def save_drift_comparison_plot(seq, mono_vo, stereo_vo,
     ax = axes[0]
     ax.plot(mono_arr[:, 0],   mono_arr[:, 1],   "b-", lw=0.8, alpha=0.8,
             label=f"Mono VO  (drift={mono_drift:.2f}m)")
+    ax.scatter(mono_arr[0,  0], mono_arr[0,  1], c="cyan",   s=60, zorder=5,
+               marker="o", label="Mono est start")
+    ax.scatter(mono_arr[-1, 0], mono_arr[-1, 1], c="cyan",   s=60, zorder=5,
+               marker="D", label="Mono est end")
     ax.plot(stereo_arr[:, 0], stereo_arr[:, 1], "r-", lw=0.8, alpha=0.8,
             label=f"Stereo VO (drift={stereo_drift:.2f}m)")
-    if gt_sparse is not None and len(gt_sparse):
-        ax.scatter(gt_sparse[[0, -1], 0], gt_sparse[[0, -1], 1],
-                   c="green", s=60, zorder=5, marker="*",
-                   label="GT start / end")
+    ax.scatter(stereo_arr[0,  0], stereo_arr[0,  1], c="orange", s=60, zorder=5,
+               marker="o", label="Stereo est start")
+    ax.scatter(stereo_arr[-1, 0], stereo_arr[-1, 1], c="orange", s=60, zorder=5,
+               marker="D", label="Stereo est end")
+    if gt_sparse is not None and len(gt_sparse) >= 1:
+        ax.scatter(gt_sparse[0, 0], gt_sparse[0, 1],
+                   c="lime", s=100, zorder=6, marker="*", label="GT start")
+    if gt_sparse is not None and len(gt_sparse) >= 2:
+        ax.scatter(gt_sparse[-1, 0], gt_sparse[-1, 1],
+                   c="gold", s=100, zorder=6, marker="*", label="GT end")
     ax.set_xlabel("x [m]"); ax.set_ylabel("y [m]")
     ax.set_title("Top-down  x–y  (start-aligned to GT)")
     ax.legend(fontsize=8)
@@ -682,6 +831,7 @@ print_stereo_params(
 print_stereo_extrinsics(_tmp_loader.calib)
 
 for config_file in SEQUENCES:
+    np.random.seed(42)          # reset per-sequence so map capping is reproducible
     cfg     = load_run_config(config_file)
     loader  = TUMVILoader.from_config(cfg)
     seq     = cfg.sequence_name
@@ -706,32 +856,52 @@ for config_file in SEQUENCES:
     mono_vo.save_trajectory(os.path.join(out_dir, "mono_traj.txt"))
     stereo_vo.save_trajectory(os.path.join(out_dir, "stereo_traj.txt"))
 
-    save_mono_plot(cfg, loader, mono_vo, mono_time, out_dir)
-    save_stereo_plot(cfg, loader, stereo_vo, stereo_time, out_dir)
+    _full_gt = seq in FULL_GT
+    save_mono_plot(cfg, loader, mono_vo, mono_time, out_dir, full_gt=_full_gt)
+    save_stereo_plot(cfg, loader, stereo_vo, stereo_time, out_dir, full_gt=_full_gt)
 
     gt_list = [f.T_world_cam0 for f in loader]   # None where GT missing
 
+    # For drift sequences: pre-apply start-pose alignment so 3D plots show
+    # the trajectory in GT world frame without misleading SE3/Sim3 fitting.
+    if _full_gt:
+        poses_3d_m = mono_vo.trajectory[1]
+        poses_3d_s = stereo_vo.trajectory[1]
+        align_m, align_s = "sim3", "se3"
+    else:
+        _gt_nonnull = [T for T in gt_list if T is not None]
+        if _gt_nonnull:
+            _Ta_m = _gt_nonnull[0] @ np.linalg.inv(mono_vo.trajectory[1][0])
+            _Ta_s = _gt_nonnull[0] @ np.linalg.inv(stereo_vo.trajectory[1][0])
+            poses_3d_m = [_Ta_m @ T for T in mono_vo.trajectory[1]]
+            poses_3d_s = [_Ta_s @ T for T in stereo_vo.trajectory[1]]
+        else:
+            poses_3d_m = mono_vo.trajectory[1]
+            poses_3d_s = stereo_vo.trajectory[1]
+        align_m = align_s = ""   # already start-aligned; skip SE3/Sim3 fit
+
     save_3d_trajectory(
-        est_poses = mono_vo.trajectory[1],
+        est_poses = poses_3d_m,
         gt_poses  = gt_list,
         title     = f"Mono VO — {seq}",
         out_path  = os.path.join(out_dir, "mono_traj_3d.png"),
-        align     = "sim3",
+        align     = align_m,
     )
     save_3d_trajectory(
-        est_poses = stereo_vo.trajectory[1],
+        est_poses = poses_3d_s,
         gt_poses  = gt_list,
         title     = f"Stereo VO — {seq}",
         out_path  = os.path.join(out_dir, "stereo_traj_3d.png"),
-        align     = "se3",
+        align     = align_s,
     )
 
     save_comparison_3d(
-        mono_poses   = mono_vo.trajectory[1],
-        stereo_poses = stereo_vo.trajectory[1],
-        gt_poses     = gt_list,
+        mono_poses   = poses_3d_m,
+        stereo_poses = poses_3d_s,
+        gt_poses     = gt_list,      # pass all GT; full_gt controls how it's used
         seq_name     = seq,
         out_path     = os.path.join(out_dir, "comparison_3d.png"),
+        full_gt      = _full_gt,
     )
 
     mono_est,   mono_gt   = collect_gt(loader, mono_vo.trajectory[1])
@@ -810,11 +980,17 @@ for config_file in SEQUENCES:
             mono_drift = stereo_drift = float("nan")
 
         # Per-frame RPE on consecutive GT segments.
-        # Stereo is metric (scale=1) → raw RPE is meaningful.
-        # Mono has arbitrary scale and often a degenerate frozen trajectory
-        # (corridor3: 5013 failures) → skip, report N/A.
         stereo_rpe_d1, stereo_rpe_rot_d1 = compute_rpe_d1_on_consecutive_gt(
             loader, stereo_vo.trajectory[1])
+
+        # Local ATE inside each mocap block (start + end coverage separately)
+        mono_blocks   = compute_local_ate_blocks(
+            loader, mono_vo.trajectory[1],   align_mode="sim3")
+        stereo_blocks = compute_local_ate_blocks(
+            loader, stereo_vo.trajectory[1], align_mode="se3")
+
+        def _ate_str(v):
+            return f"{v:>12.4f}" if np.isfinite(v) else f"{'N/A':>12}"
 
         print(f"\n── Evaluation: {seq} (start-end drift) {'─' * 15}")
         print(f"{'Metric':<32} {'Mono VO':>12} {'Stereo VO':>12}")
@@ -823,6 +999,13 @@ for config_file in SEQUENCES:
               f"{mono_drift:>12.4f} {stereo_drift:>12.4f}")
         rpe_str = f"{stereo_rpe_d1:>12.4f}" if np.isfinite(stereo_rpe_d1) else f"{'N/A':>12}"
         print(f"{'RPE trans d=1 [m] (stereo)':<32} {'N/A':>12} {rpe_str}")
+        sn, en = mono_blocks["start_n"], mono_blocks["end_n"]
+        print(f"{'Local ATE start block [m]':<32} "
+              f"{_ate_str(mono_blocks['start_ate'])} "
+              f"{_ate_str(stereo_blocks['start_ate'])}   (n={sn})")
+        print(f"{'Local ATE end block [m]':<32} "
+              f"{_ate_str(mono_blocks['end_ate'])} "
+              f"{_ate_str(stereo_blocks['end_ate'])}   (n={en})")
         print(f"{'Tracking failures':<32} "
               f"{mono_vo.n_failures:>12d} {stereo_vo.n_failures:>12d}")
         print(f"{'Runtime [fps]':<32} "
