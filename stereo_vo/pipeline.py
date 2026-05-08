@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import Optional, List, Tuple
 
 from mono_vo.feature_tracker import FeatureTracker, FeatureConfig
-from mono_vo.epipolar        import pnp_ransac, refine_pose_ba
+from mono_vo.epipolar        import pnp_ransac, refine_pose_ba, estimate_essential, recover_pose
 from stereo_vo.disparity     import DisparityComputer, DisparityConfig
 from data.data_loader        import StereoPair, save_trajectory_tum
 from utils.math_utils        import Rt_to_T, invert_T, cam_from_world
@@ -34,6 +34,7 @@ class StereoVOConfig:
     max_velocity:     float = 0.5
     use_depth_update: bool  = True   # disable for low-texture scenes (corridor)
     use_clahe:        bool  = False  # CLAHE contrast enhancement before SGBM+LK
+    use_ess_rotation: bool  = False  # use E-matrix rotation + linear t (outdoor: reduces heading drift)
     verbose:          bool  = True
 
 
@@ -52,6 +53,7 @@ class StereoVO:
         self._initialised  = False
         self._frame_id     = 0
         self.n_failures    = 0
+        self.n_reinits     = 0   # map-replenishment events (stereo has no full relocalization)
         self.n_new_pts     = 0
 
         self._map3d: Optional[np.ndarray] = None
@@ -164,6 +166,7 @@ class StereoVO:
         if n_tracked < self.cfg.pnp_min_inliers:
             self._log(f"[{self._frame_id:04d}] too few – hold")
             self.n_failures += 1
+            self.n_reinits  += 1
             if ok.sum() > 5:
                 self._map3d = map3d_t
                 self._map2d = map2d_cur
@@ -172,16 +175,26 @@ class StereoVO:
             self._record(ts)
             return self._T_cur.copy()
 
-        # 2. PnP
-        R, t, inlier_mask = pnp_ransac(
-            map3d_t, map2d_cur,
-            self.K, self.dist,
-            min_inliers=self.cfg.pnp_min_inliers,
-            ransac_th=self.cfg.pnp_ransac_th,
-        )
+        # 2. Pose estimation: hybrid E-matrix+linear-t, or PnP fallback
+        R, t, inlier_mask = None, None, None
+        if self.cfg.use_ess_rotation and n_tracked >= 15:
+            R, t, inlier_mask = self._ess_rotation_pose(
+                self._map2d[ok], map2d_cur, map3d_t, disp)
+            if R is None:
+                self._log(f"[{self._frame_id:04d}] E-rot failed, trying PnP")
+
+        if R is None:
+            R, t, inlier_mask = pnp_ransac(
+                map3d_t, map2d_cur,
+                self.K, self.dist,
+                min_inliers=self.cfg.pnp_min_inliers,
+                ransac_th=self.cfg.pnp_ransac_th,
+            )
+
         if R is None:
             self._log(f"[{self._frame_id:04d}] PnP failed – hold")
             self.n_failures += 1
+            self.n_reinits  += 1
             self._map3d = map3d_t
             self._map2d = map2d_cur
             self._add_points(rect_l, disp)
@@ -206,6 +219,7 @@ class StereoVO:
         if vel > self.cfg.max_velocity:
             self._log(f"[{self._frame_id:04d}] vel={vel:.3f} – hold")
             self.n_failures += 1
+            self.n_reinits  += 1
             self._map3d = map3d_t[inlier_mask]
             self._map2d = map2d_cur[inlier_mask]
             self._add_points(rect_l, disp)
@@ -289,6 +303,82 @@ class StereoVO:
         self._log(f"  +{good.sum()} pts → {len(self._map3d)}")
 
     # ── helpers ───────────────────────────────────────────────────────────
+
+    def _ess_rotation_pose(
+        self,
+        pts2d_prev: np.ndarray,  # (N,2) prev 2D positions (LK tracked)
+        pts2d_cur:  np.ndarray,  # (N,2) cur  2D positions
+        pts3d_w:    np.ndarray,  # (N,3) world-frame 3D positions
+        disp:       np.ndarray,  # current disparity map
+    ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
+        """
+        Hybrid pose estimation:
+          1. Essential matrix on 2D-2D → R_ess (no depth noise in rotation)
+          2. Current-frame stereo depth → metric scale s
+          3. t_cw_new = R_ess @ t_cw_prev + s * t_ess  (closed-form, no world map)
+
+        Falls back to PnP (returns None triple) on any failure.
+        """
+        E, ess_mask = estimate_essential(pts2d_prev, pts2d_cur, self.K, ransac_th=1.0)
+        if E is None or ess_mask.sum() < 12:
+            return None, None, None
+
+        R_ess, t_ess, n_ess = recover_pose(E, pts2d_prev, pts2d_cur, self.K, ess_mask)
+        if R_ess is None or n_ess < 10:
+            return None, None, None
+
+        # ── new rotation (compose with previous absolute rotation) ────────────
+        R_cw_prev = self._T_cur[:3, :3].T      # R_wc.T = R_cw
+        R_cw_new  = R_ess @ R_cw_prev
+
+        # ── previous camera-frame translation ─────────────────────────────────
+        t_wc_prev = self._T_cur[:3, 3]
+        t_cw_prev = -R_cw_prev @ t_wc_prev
+
+        # ── scale from current stereo depth at essential-matrix inlier pts ────
+        # For inlier i: P_cur_cam = R_ess @ P_prev_cam + s * t_ess
+        # where P_prev_cam = R_cw_prev @ P_world + t_cw_prev
+        # Measure P_cur_cam directly from current disparity.
+        # Scale: s = median over i of (P_cur_i - R_ess @ P_prev_i) · t_hat
+        ess_idx = np.where(ess_mask)[0]
+        pts3d_cur, _, valid = self.disp_cmp.unproject_points(
+            pts2d_cur[ess_idx], disp)
+        if len(pts3d_cur) < 6:
+            return None, None, None
+
+        # Previous camera-frame positions of valid points
+        pts3d_prev_cam = (
+            (R_cw_prev @ pts3d_w[ess_idx[valid]].T).T + t_cw_prev
+        )
+        # Filter points behind camera
+        front = pts3d_prev_cam[:, 2] > 0.05
+        if front.sum() < 6:
+            return None, None, None
+
+        pts3d_prev_rot = (R_ess @ pts3d_prev_cam[front].T).T
+        pts3d_cur_v    = pts3d_cur[front]
+
+        t_hat    = t_ess / (np.linalg.norm(t_ess) + 1e-9)
+        residuals = pts3d_cur_v - pts3d_prev_rot          # (M, 3)
+        scales    = residuals @ t_hat                     # (M,) scalar per point
+        pos       = scales[(scales > 1e-3) & (scales < self.cfg.max_velocity * 3)]
+        if len(pos) < 3:
+            return None, None, None
+
+        s = float(np.median(pos))
+
+        # ── new translation (closed-form, world map never used for t) ─────────
+        t_cw_new = R_ess @ t_cw_prev + s * t_ess
+
+        # Sanity: camera should be close to previous position
+        T_cw_new = np.eye(4); T_cw_new[:3, :3] = R_cw_new; T_cw_new[:3, 3] = t_cw_new
+        T_wc_new = invert_T(T_cw_new)
+        if np.linalg.norm(T_wc_new[:3, 3] - self._T_cur[:3, 3]) > self.cfg.max_velocity:
+            return None, None, None
+
+        inlier_mask = np.zeros(len(pts3d_w), bool)
+        inlier_mask[ess_idx[valid][front]] = True
+        return R_cw_new, t_cw_new, inlier_mask
 
     def _update_depths_from_disp(self, disp: np.ndarray) -> None:
         """Re-measure depth of each tracked map point from the current

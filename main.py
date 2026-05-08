@@ -38,13 +38,14 @@ from utils.visualizer        import LiveVisualizer, save_3d_trajectory, save_com
 
 
 np.random.seed(42)
+print(f"[Reproducibility] np.random.seed(42)  |  Python {__import__('sys').version.split()[0]}  |  NumPy {np.__version__}")
 
 _SHOW = os.environ.get("SHOW_VIS", "1") != "0"
 _SHOW = 0
 SEQUENCES = [
     "config/tumvi_room2.yaml",
     "config/tumvi_corridor3.yaml",
-    # "config/tumvi_outdoors5.yaml",
+    "config/tumvi_outdoors5.yaml",
 ]
 
 # room2 has full GT → ATE.  corridor3/outdoors5 → start-end drift only.
@@ -120,15 +121,17 @@ MONO_CONFIGS = {
         min_parallax_px       = 6.0,
         max_parallax_px       = 80.0,
         expected_depth        = 5.0,
+        scene_depth_lo_m      = 1.0,    # exclude ground/nearby (<1m) from VD depth estimate
         pnp_min_inliers       = 12,
         pnp_ransac_th         = 6.0,
         reproj_thresh         = 4.0,
         use_ba                = True,
         max_velocity          = 2.0,
-        kf_min_parallax_px    = 15.0,
+        kf_min_parallax_px    = 12.0,   # was 15 — trigger KF updates more often for fast motion
         kf_max_parallax_px    = 100.0,
         kf_min_baseline_ratio = 0.03,
         max_cvm_frames        = 3,
+        use_clahe             = True,   # outdoor lighting varies; CLAHE helps feature visibility
         verbose               = False,
     ),
 }
@@ -182,21 +185,25 @@ STEREO_CONFIGS = {
     "outdoors5": StereoVOConfig(
         feature         = _FEAT,
         disparity       = DisparityConfig(
-            num_disparities = 64,
+            num_disparities = 128,
             block_size      = 11,
             min_depth       = 0.5,
-            max_depth       = 5.0,
+            max_depth       = 20.0,
             min_disparity   = 1.0,
             patch_radius    = 3,
+            min_disp_pixels = 5,
+            wls_lambda      = 8000,
+            wls_sigma       = 1.2,
         ),
-        min_tracked_pts = 150,
-        max_map_pts     = 600,
-        pnp_min_inliers = 20,
-        pnp_ransac_th   = 2.0,
-        reproj_thresh   = 2.0,
-        use_ba          = True,
-        max_velocity    = 2.0,
-        verbose         = False,
+        min_tracked_pts  = 100,
+        max_map_pts      = 600,
+        pnp_min_inliers  = 15,
+        pnp_ransac_th    = 2.0,
+        reproj_thresh    = 2.0,
+        use_ba           = True,
+        max_velocity     = 2.0,
+        use_depth_update = False,
+        verbose          = False,
     ),
 }
 
@@ -385,7 +392,7 @@ def run_stereo(loader, seq, cfg, show: bool = True):
 
     fps = len(loader) / elapsed
     print(f"  Done: {len(loader)} frames  {elapsed:.1f}s  "
-          f"({fps:.1f} fps)  failures={vo.n_failures}")
+          f"({fps:.1f} fps)  failures={vo.n_failures}  reinits={vo.n_reinits}")
     return vo, elapsed
 
 
@@ -715,6 +722,311 @@ def save_drift_comparison_plot(seq, mono_vo, stereo_vo,
 
 
 
+def save_stereo_sample_visuals(loader, stereo_cfg, out_dir, n_samples: int = 3) -> None:
+    """
+    Sample n_samples frames from the sequence and save:
+      1. rectified_pair_N.png   — side-by-side rectified stereo pair + epipolar lines
+      2. disparity_map_N.png    — colour-mapped SGBM disparity map
+      3. depth_map_N.png        — colour-mapped metric depth map  Z = fB/d
+      4. pointcloud_N.png       — 3D scatter of unprojected grid points
+
+    This satisfies the spec requirement to show disparity, depth, and 3D
+    point cloud as explicit pipeline outputs (not just internal buffers).
+
+    Camera is NOT pre-rectified in TUM-VI: raw fisheye images are
+    remapped via cv2.fisheye.initUndistortRectifyMap before SGBM.
+    """
+    from stereo_vo.disparity import DisparityComputer
+    from mpl_toolkits.mplot3d import Axes3D   # registers 3D projection
+
+    disp_cmp  = DisparityComputer(loader.calib, stereo_cfg.disparity)
+    n_frames  = len(loader._frames)
+    fracs     = [0.10, 0.50, 0.90][:n_samples]
+    indices   = [min(int(n_frames * f), n_frames - 1) for f in fracs]
+
+    print(f"\n  [Stereo visuals] saving disparity/depth/pointcloud for "
+          f"{len(indices)} sample frames ...")
+
+    for j, fidx in enumerate(indices):
+        frame = loader._frames[fidx]
+        img_l = frame.img_left
+        img_r = frame.img_right
+        if img_r is None:
+            continue
+
+        # ── Rectification ─────────────────────────────────────────────────
+        rect_l, rect_r = loader.calib.rectify(img_l, img_r)
+
+        # ── Disparity (SGBM) ──────────────────────────────────────────────
+        disp  = disp_cmp.compute(rect_l, rect_r, rectified=True)
+        valid = disp > disp_cmp.cfg.min_disparity
+
+        # ── Depth map  Z = fB / d ──────────────────────────────────────────
+        depth = disp_cmp.disparity_to_depth(disp)
+
+        # ── Sparse 3D points from a uniform grid ──────────────────────────
+        h, w = rect_l.shape[:2]
+        gx = np.linspace(20, w - 20, 40, dtype=int)
+        gy = np.linspace(20, h - 20, 30, dtype=int)
+        gxx, gyy = np.meshgrid(gx, gy)
+        pts2d_grid = np.stack([gxx.ravel(), gyy.ravel()], axis=1).astype(np.float32)
+        pts3d, _, _ = disp_cmp.unproject_points(pts2d_grid, disp)
+
+        n = j + 1
+
+        # ── 1. Rectified stereo pair ───────────────────────────────────────
+        pair_bgr = cv2.cvtColor(np.hstack([rect_l, rect_r]), cv2.COLOR_GRAY2BGR)
+        for row in range(0, h, h // 8):
+            cv2.line(pair_bgr, (0, row), (2 * w - 1, row), (0, 200, 0), 1)
+        cv2.putText(pair_bgr, "LEFT (rectified)", (10, 18),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        cv2.putText(pair_bgr, "RIGHT (rectified)", (w + 10, 18),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        cv2.imwrite(os.path.join(out_dir, f"rectified_pair_{n}.png"), pair_bgr)
+
+        # ── 2. Disparity map (jet) ─────────────────────────────────────────
+        disp_u8 = np.zeros(disp.shape, np.uint8)
+        if valid.any():
+            dlo, dhi = disp[valid].min(), disp[valid].max()
+            disp_u8[valid] = np.clip(
+                (disp[valid] - dlo) / max(dhi - dlo, 1e-3) * 255, 0, 255
+            ).astype(np.uint8)
+        disp_col = cv2.applyColorMap(disp_u8, cv2.COLORMAP_JET)
+        # Add colour bar legend (text labels)
+        if valid.any():
+            cv2.putText(disp_col, f"disp {dlo:.1f}px", (5, h - 25),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+            cv2.putText(disp_col, f"max {dhi:.1f}px", (5, h - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+        cv2.imwrite(os.path.join(out_dir, f"disparity_map_{n}.png"), disp_col)
+
+        # ── 3. Depth map (jet) ────────────────────────────────────────────
+        valid_d = depth > 0
+        depth_u8 = np.zeros(depth.shape, np.uint8)
+        if valid_d.any():
+            zlo, zhi = depth[valid_d].min(), depth[valid_d].max()
+            depth_u8[valid_d] = np.clip(
+                (depth[valid_d] - zlo) / max(zhi - zlo, 1e-3) * 255, 0, 255
+            ).astype(np.uint8)
+        depth_col = cv2.applyColorMap(depth_u8, cv2.COLORMAP_JET)
+        if valid_d.any():
+            cv2.putText(depth_col, f"depth {zlo:.2f}m", (5, h - 25),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+            cv2.putText(depth_col, f"max {zhi:.2f}m", (5, h - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+        cv2.imwrite(os.path.join(out_dir, f"depth_map_{n}.png"), depth_col)
+
+        # ── 4. 3D point cloud scatter (X forward-right, Y down, Z forward) ─
+        if len(pts3d) > 0:
+            fig = plt.figure(figsize=(8, 6), facecolor="#111111")
+            ax  = fig.add_subplot(111, projection="3d")
+            ax.set_facecolor("#111111")
+            sc  = ax.scatter(
+                pts3d[:, 0], pts3d[:, 2], -pts3d[:, 1],
+                c=pts3d[:, 2], cmap="jet", s=4, alpha=0.8,
+            )
+            plt.colorbar(sc, ax=ax, label="Depth Z (m)", shrink=0.6)
+            ax.set_xlabel("X (m)"); ax.set_ylabel("Z (m)"); ax.set_zlabel("-Y (m)")
+            ax.set_title(f"3D Point Cloud  frame {fidx}", color="white")
+            ax.tick_params(colors="white"); ax.xaxis.label.set_color("white")
+            ax.yaxis.label.set_color("white"); ax.zaxis.label.set_color("white")
+            ax.view_init(elev=-10, azim=-80)
+            plt.tight_layout()
+            plt.savefig(os.path.join(out_dir, f"pointcloud_{n}.png"),
+                        dpi=100, facecolor=fig.get_facecolor())
+            plt.close()
+
+        n_pts  = len(pts3d)
+        d_info = (f"disp=[{disp[valid].min():.1f},{disp[valid].max():.1f}]px  "
+                  f"depth=[{depth[valid_d].min():.2f},{depth[valid_d].max():.2f}]m"
+                  if valid.any() and valid_d.any() else "no valid disparity")
+        print(f"    frame {fidx}: {n_pts} 3D pts  {d_info}")
+        frame.release()
+
+
+def save_point_cloud_ply(loader, stereo_vo_obj, stereo_cfg,
+                         out_dir, max_pts: int = 1_000_000) -> None:
+    """
+    Build a dense 3D point cloud by accumulating SGBM depth across keyframes.
+    Each valid depth pixel is unprojected to camera frame (Z = fB/d) then
+    transformed to world frame using the estimated stereo VO pose.
+    Saved as binary-little-endian PLY — open directly in MeshLab.
+
+    Spec §V.B: 'Construct 3D point clouds in left camera frame using (5).'
+
+    Quality improvements:
+      - Keyframe-based: accumulate only when camera moves >= 5 cm or >= 2 deg
+      - Min disparity filter: reject pixels with disp < 1.5 px (uncertain depth)
+      - Statistical outlier removal: kNN-based after accumulation
+    """
+    from stereo_vo.disparity import DisparityComputer
+    from scipy.spatial import cKDTree
+
+    disp_cmp  = DisparityComputer(loader.calib, stereo_cfg.disparity)
+    f_px = float(disp_cmp.f)
+    cx   = float(disp_cmp.cx)
+    cy   = float(disp_cmp.cy)
+    fB   = f_px * float(disp_cmp.B)          # fB product for direct disp→Z
+    min_disp_px = 1.5                         # reject near-zero disparity (far/uncertain)
+
+    poses    = stereo_vo_obj.trajectory[1]    # T_wc per frame (world←cam)
+    n_frames = min(len(loader._frames), len(poses))
+
+    # ── keyframe selection: accumulate only on sufficient camera motion ──
+    min_trans_m   = 0.05   # 5 cm
+    min_rot_deg   = 2.0
+    max_keyframes = 800    # hard cap: prevents OOM on long sequences
+
+    frame_indices = []
+    prev_T = None
+    for i in range(n_frames):
+        T = poses[i]
+        if prev_T is None:
+            frame_indices.append(i)
+            prev_T = T
+            continue
+        delta_t = np.linalg.norm(T[:3, 3] - prev_T[:3, 3])
+        R_rel   = T[:3, :3] @ prev_T[:3, :3].T
+        cos_a   = np.clip((np.trace(R_rel) - 1.0) / 2.0, -1.0, 1.0)
+        delta_r = np.degrees(np.arccos(cos_a))
+        if delta_t >= min_trans_m or delta_r >= min_rot_deg:
+            frame_indices.append(i)
+            prev_T = T
+
+    # Subsample keyframes evenly if above cap
+    if len(frame_indices) > max_keyframes:
+        step_kf       = len(frame_indices) // max_keyframes
+        frame_indices = frame_indices[::step_kf][:max_keyframes]
+
+    # Auto-scale pixel step so total raw points stay under 4M
+    # kf * (512/step_px)^2 <= target  →  step_px >= 512 * sqrt(kf / target)
+    target_raw = 4_000_000
+    step_px = int(np.ceil(512.0 * np.sqrt(len(frame_indices) / target_raw)))
+    step_px = max(4, step_px + step_px % 2)   # minimum 4, keep even
+
+    all_xyz: list = []
+    all_rgb: list = []
+
+    print(f"\n  [PLY] accumulating 3D points: {len(frame_indices)} keyframes "
+          f"(motion >= {min_trans_m*100:.0f}cm / {min_rot_deg:.0f}deg), "
+          f"pixel step={step_px} (auto-scaled), min_disp={min_disp_px}px ...")
+
+    for fidx in frame_indices:
+        frame = loader._frames[fidx]
+        img_l = frame.img_left
+        img_r = frame.img_right
+        if img_r is None:
+            frame.release()
+            continue
+
+        # ── rectify (TUM-VI is NOT pre-rectified) ─────────────────────────
+        rect_l, rect_r = loader.calib.rectify(img_l, img_r)
+
+        # ── SGBM disparity → metric depth map  Z = fB/d ───────────────────
+        disp  = disp_cmp.compute(rect_l, rect_r, rectified=True)
+        depth = disp_cmp.disparity_to_depth(disp)
+
+        h, w = rect_l.shape[:2]
+
+        # Pixel grid (subsampled)
+        v_arr = np.arange(step_px // 2, h, step_px, dtype=np.int32)
+        u_arr = np.arange(step_px // 2, w, step_px, dtype=np.int32)
+        vv, uu = np.meshgrid(v_arr, u_arr, indexing='ij')
+        v_flat = vv.ravel()
+        u_flat = uu.ravel()
+
+        Z = depth[v_flat, u_flat]
+        D = disp[v_flat, u_flat]
+        # Reject: no depth, tiny disparity (far/noisy), or explicitly invalid
+        valid = (Z > 0) & (D >= min_disp_px)
+        if valid.sum() < 5:
+            frame.release()
+            continue
+
+        Z_v = Z[valid].astype(np.float64)
+        u_v = u_flat[valid].astype(np.float64)
+        v_v = v_flat[valid].astype(np.float64)
+
+        # ── 3D reconstruction: spec eq (5) ────────────────────────────────
+        # Z = fB/d,  X = (u - cx)*Z/f,  Y = (v - cy)*Z/f
+        X_v = (u_v - cx) * Z_v / f_px
+        Y_v = (v_v - cy) * Z_v / f_px
+        pts_cam = np.stack([X_v, Y_v, Z_v], axis=1)   # (N, 3) left cam frame
+
+        # ── transform to world frame using estimated pose ──────────────────
+        T_wc  = poses[fidx]
+        pts_w = (T_wc[:3, :3] @ pts_cam.T).T + T_wc[:3, 3]
+
+        # ── colour from rectified left image (greyscale → RGB) ────────────
+        intensity = rect_l[v_flat[valid], u_flat[valid]]   # uint8
+        rgb = np.stack([intensity, intensity, intensity], axis=1)
+
+        all_xyz.append(pts_w.astype(np.float32))
+        all_rgb.append(rgb)
+        frame.release()
+
+    if not all_xyz:
+        print("  [PLY] no valid points — skipping")
+        return
+
+    pts = np.vstack(all_xyz)   # (M, 3) float32
+    col = np.vstack(all_rgb)   # (M, 3) uint8
+
+    # ── statistical outlier removal (kNN-based) ───────────────────────────
+    print(f"  [PLY] {len(pts):,} raw points — running outlier removal ...")
+    k = 10
+    tree = cKDTree(pts)
+    dists, _ = tree.query(pts, k=k + 1)       # k+1: first hit is self (dist=0)
+    mean_nn  = dists[:, 1:].mean(axis=1)      # mean distance to k neighbours
+    thr      = mean_nn.mean() + 2.0 * mean_nn.std()
+    keep     = mean_nn < thr
+    pts = pts[keep];  col = col[keep]
+    print(f"  [PLY] {keep.sum():,} points after outlier removal "
+          f"({(~keep).sum():,} removed, thr={thr:.3f}m)")
+
+    # Random subsample if above cap
+    if len(pts) > max_pts:
+        idx = np.random.choice(len(pts), max_pts, replace=False)
+        pts = pts[idx]
+        col = col[idx]
+
+    # ── write binary-little-endian PLY ────────────────────────────────────
+    # Layout per vertex: 3× float32 (xyz) + 3× uint8 (rgb) = 15 bytes
+    # Using numpy structured array — no padding, fully MeshLab-compatible.
+    header = (
+        "ply\n"
+        "format binary_little_endian 1.0\n"
+        "comment Stereo VO 3D reconstruction - TUM VI\n"
+        "comment Open: MeshLab -> File -> Import Mesh\n"
+        "comment Z = fB/d,  world frame via estimated stereo VO poses\n"
+        f"element vertex {len(pts)}\n"
+        "property float x\n"
+        "property float y\n"
+        "property float z\n"
+        "property uchar red\n"
+        "property uchar green\n"
+        "property uchar blue\n"
+        "end_header\n"
+    ).encode("ascii")
+
+    # Pack xyz (float32) and rgb (uint8) as tightly as possible
+    xyz_bytes = pts.astype(np.float32).tobytes()        # N × 12 bytes
+    # Interleave: build one byte-row per vertex [x y z r g b]
+    n = len(pts)
+    vertex_buf = np.empty((n, 15), dtype=np.uint8)
+    vertex_buf[:, :12] = np.frombuffer(xyz_bytes, dtype=np.uint8).reshape(n, 12)
+    vertex_buf[:, 12:] = col.astype(np.uint8)
+
+    ply_path = os.path.join(out_dir, "pointcloud.ply")
+    with open(ply_path, "wb") as fh:
+        fh.write(header)
+        fh.write(vertex_buf.tobytes())
+
+    size_mb = os.path.getsize(ply_path) / 1e6
+    print(f"  [PLY] {len(pts):,} points saved → {ply_path}  ({size_mb:.1f} MB)")
+    print(f"        MeshLab: File ▶ Import Mesh ▶ {os.path.basename(ply_path)}")
+
+
 _CSV_FIELDS = [
     "sequence", "method", "metric_type",
     "ATE_RMSE_m", "ATE_mean_m",
@@ -859,6 +1171,8 @@ for config_file in SEQUENCES:
     _full_gt = seq in FULL_GT
     save_mono_plot(cfg, loader, mono_vo, mono_time, out_dir, full_gt=_full_gt)
     save_stereo_plot(cfg, loader, stereo_vo, stereo_time, out_dir, full_gt=_full_gt)
+    save_stereo_sample_visuals(loader, stereo_cfg, out_dir, n_samples=3)
+    save_point_cloud_ply(loader, stereo_vo, stereo_cfg, out_dir)
 
     gt_list = [f.T_world_cam0 for f in loader]   # None where GT missing
 
@@ -1064,3 +1378,115 @@ for seq, r in all_results.items():
 print("\nAll trajectory files saved under outputs/<sequence>/")
 
 save_results_csv(all_results, "outputs/evaluation_results.csv")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  ILLUMINATION SENSITIVITY ABLATION  (Spec §VI — required quantification)
+#  Runs mono VO only with CLAHE toggled, compares tracking failures and ATE/drift
+#  against the baseline already stored in all_results.
+# ─────────────────────────────────────────────────────────────────────────────
+import copy
+
+def _run_single_clahe_abl(pipeline_cls, calib_obj, base_cfg, loader,
+                           is_full_gt, base_fail, base_metric, align_mode):
+    """Helper: run one pipeline with CLAHE toggled, return (fail, metric)."""
+    abl_cfg           = copy.deepcopy(base_cfg)
+    abl_cfg.use_clahe = not base_cfg.use_clahe
+    abl_cfg.verbose   = False
+
+    vo = pipeline_cls(calib_obj, abl_cfg)
+    for frame in loader:
+        if pipeline_cls is MonoVO:
+            vo.process(frame.img_left_rect, frame.timestamp)
+        else:
+            vo.process(frame.img_left, frame.img_right, frame.timestamp)
+
+    abl_est, abl_gt = collect_gt(loader, vo.trajectory[1])
+    if is_full_gt and len(abl_gt) > 10:
+        res    = align_and_evaluate(abl_est, abl_gt, align=align_mode)
+        metric = res.get("ate_rmse", float("nan"))
+    elif len(abl_gt) >= 2:
+        metric = start_end_drift(vo.trajectory[1], [abl_gt[0], abl_gt[-1]])
+    else:
+        metric = float("nan")
+
+    return vo.n_failures, metric
+
+
+def run_clahe_ablation(all_results: dict) -> None:
+    """
+    Spec §VI — quantify sensitivity to illumination changes.
+    Runs BOTH mono and stereo VO with CLAHE toggled for every sequence,
+    then prints a comparison table of failures and ATE/drift.
+    """
+    print("\n" + "=" * 74)
+    print("  ILLUMINATION SENSITIVITY ABLATION  —  CLAHE on vs off  (Spec §VI)")
+    print("=" * 74)
+    print(f"{'Sequence':<12} {'Pipeline':<9} {'CLAHE':<7} "
+          f"{'Failures':>9} {'ATE / Drift [m]':>16}  Config")
+    print("-" * 74)
+
+    def _ms(v):    return f"{v:>16.4f}" if np.isfinite(v) else f"{'N/A':>16}"
+    def _clahe(b): return "ON " if b else "OFF"
+    def _sign(d):  return "+" if d >= 0 else ""
+
+    for config_file in SEQUENCES:
+        seq        = load_run_config(config_file).sequence_name
+        is_full_gt = seq in FULL_GT
+        metric_lbl = "ATE" if is_full_gt else "drift"
+
+        for pipeline_label, base_cfg, align_mode, fail_key, metric_key in [
+            ("Mono",   MONO_CONFIGS[seq],   "sim3",
+             "mono_fail",   "mono_ate"   if is_full_gt else "mono_drift"),
+            ("Stereo", STEREO_CONFIGS[seq], "se3",
+             "stereo_fail", "stereo_ate" if is_full_gt else "stereo_drift"),
+        ]:
+            np.random.seed(42)
+            cfg    = load_run_config(config_file)
+            loader = TUMVILoader.from_config(cfg)
+
+            base_fail   = all_results[seq][fail_key]
+            base_metric = all_results[seq].get(metric_key, float("nan"))
+
+            # run ablation (CLAHE toggled)
+            if pipeline_label == "Mono":
+                abl_fail, abl_metric = _run_single_clahe_abl(
+                    MonoVO, loader.calib.cam0, base_cfg,
+                    loader, is_full_gt, base_fail, base_metric, "sim3")
+            else:
+                abl_cfg           = copy.deepcopy(base_cfg)
+                abl_cfg.use_clahe = not base_cfg.use_clahe
+                abl_cfg.verbose   = False
+                vo_s = StereoVO(loader.calib, abl_cfg)
+                for frame in loader:
+                    vo_s.process(frame.img_left, frame.img_right, frame.timestamp)
+                abl_fail = vo_s.n_failures
+                abl_est, abl_gt = collect_gt(loader, vo_s.trajectory[1])
+                if is_full_gt and len(abl_gt) > 10:
+                    res        = align_and_evaluate(abl_est, abl_gt, align="se3")
+                    abl_metric = res.get("ate_rmse", float("nan"))
+                elif len(abl_gt) >= 2:
+                    abl_metric = start_end_drift(
+                        vo_s.trajectory[1], [abl_gt[0], abl_gt[-1]])
+                else:
+                    abl_metric = float("nan")
+
+            fail_d   = abl_fail   - base_fail
+            metric_d = abl_metric - base_metric
+
+            print(f"{seq:<12} {pipeline_label:<9} "
+                  f"{_clahe(base_cfg.use_clahe):<7} {base_fail:>9}"
+                  f" {_ms(base_metric)}  production")
+            print(f"{'':12} {'':9} "
+                  f"{_clahe(not base_cfg.use_clahe):<7} {abl_fail:>9}"
+                  f" {_ms(abl_metric)}  ablation")
+            print(f"  effect: failures {_sign(fail_d)}{fail_d}  |  "
+                  f"{metric_lbl} {_sign(metric_d)}{metric_d:.4f} m")
+            print()
+
+        print("-" * 74)
+
+    print("CLAHE ablation complete.\n")
+
+
+run_clahe_ablation(all_results)
