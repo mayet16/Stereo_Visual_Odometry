@@ -474,12 +474,13 @@ def save_mono_plot(cfg, loader, mono_vo, mono_time, out_dir, full_gt: bool = Tru
 
     if full_gt:
         # ── Sim3-aligned ATE path (room2) ─────────────────────────────────────
-        mono_aligned, ate_val = None, float("nan")
-        est_poses, gt_poses   = collect_gt(loader, mono_vo.trajectory[1])
+        mono_aligned, ate_val, ate_errors = None, float("nan"), None
+        est_poses, gt_poses              = collect_gt(loader, mono_vo.trajectory[1])
         if len(gt_poses) > 10:
             result       = align_and_evaluate(est_poses, gt_poses, align="sim3")
             mono_aligned = np.array([T[:3, 3] for T in result["traj_aligned"]])
             ate_val      = result["ate_rmse"]
+            ate_errors   = result.get("errors", None)
 
         if len(gt_arr):
             ax.plot(gt_arr[:, 0], gt_arr[:, 1], "g--", lw=1.5, label="GT")
@@ -496,14 +497,17 @@ def save_mono_plot(cfg, loader, mono_vo, mono_time, out_dir, full_gt: bool = Tru
                        zorder=5, marker="D", label="est end")
         ax.set_title("Top-down x–y  (Sim3-aligned)")
 
-        if mono_aligned is not None:
-            ax2.plot(ts[:len(mono_aligned)], mono_aligned[:, 2], "b-", lw=0.9, label="Mono VO z")
-        if len(gt_arr):
-            gt_ts = np.linspace(0, ts[-1], len(gt_arr))
-            ax2.plot(gt_ts, gt_arr[:, 2], "g--", lw=1.0, label="GT z")
-        ax2.set_xlabel("time [s]"); ax2.set_ylabel("z [m]")
-        ax2.set_title("Z height over time  (Sim3-aligned)")
-        ax2.legend(fontsize=8)
+        if ate_errors is not None:
+            aligned_ts = collect_gt_timestamps(loader, mono_vo.trajectory[1], ts)
+            if len(aligned_ts):
+                aligned_ts = aligned_ts - aligned_ts[0]
+            n = min(len(aligned_ts), len(ate_errors))
+            if n:
+                ax2.plot(aligned_ts[:n], ate_errors[:n], "b-", lw=0.8, label="Mono ATE")
+            ax2.set_xlabel("time [s]"); ax2.set_ylabel("ATE [m]")
+            ax2.set_title("ATE over time  (Sim3-aligned)")
+            ax2.set_ylim(bottom=0)
+            ax2.legend(fontsize=8)
 
         plt.suptitle(f"Monocular VO — {cfg.sequence_name}  |  "
                      f"failures={mono_vo.n_failures}   ATE={ate_val:.3f}m   fps={fps:.0f}",
@@ -603,7 +607,7 @@ def save_stereo_plot(cfg, loader, stereo_vo, stereo_time, out_dir, full_gt: bool
             if n:
                 ax2.plot(aligned_ts[:n], ate_errors[:n], "r-", lw=0.8, label="Stereo ATE")
             ax2.set_xlabel("time [s]"); ax2.set_ylabel("ATE [m]")
-            ax2.set_title("Position error over time  (SE3-aligned)")
+            ax2.set_title("ATE over time  (SE3-aligned)")
             ax2.set_ylim(bottom=0)
         else:
             raw = np.array([T[:3, 3] for T in stereo_vo.trajectory[1]])
@@ -1033,6 +1037,7 @@ _CSV_FIELDS = [
     "RPE_trans_d1_m", "RPE_rot_d1_deg",
     "RPE_trans_100m_m", "RPE_rot_100m_deg", "RPE_100m_segments",
     "traj_len_m", "scale", "drift_m",
+    "local_ate_start_m", "local_ate_end_m",
     "failures", "runtime_fps",
 ]
 
@@ -1060,6 +1065,8 @@ def save_results_csv(results: dict, path: str) -> None:
                 "traj_len_m":          _fmt(r["mono_traj_len"], 2),
                 "scale":               _fmt(r["mono_scale"]),
                 "drift_m":             "",
+                "local_ate_start_m":   "",
+                "local_ate_end_m":     "",
                 "failures":            r["mono_fail"],
                 "runtime_fps":         round(r["mono_fps"], 1),
             })
@@ -1077,6 +1084,8 @@ def save_results_csv(results: dict, path: str) -> None:
                 "traj_len_m":          _fmt(r["stereo_traj_len"], 2),
                 "scale":               _fmt(r["stereo_scale"]),
                 "drift_m":             "",
+                "local_ate_start_m":   "",
+                "local_ate_end_m":     "",
                 "failures":            r["stereo_fail"],
                 "runtime_fps":         round(r["stereo_fps"], 1),
             })
@@ -1095,6 +1104,8 @@ def save_results_csv(results: dict, path: str) -> None:
                 "traj_len_m":          "",
                 "scale":               "",
                 "drift_m":             _fmt(r["mono_drift"]),
+                "local_ate_start_m":   _fmt(r.get("mono_local_ate_start")),
+                "local_ate_end_m":     _fmt(r.get("mono_local_ate_end")),
                 "failures":            r["mono_fail"],
                 "runtime_fps":         round(r["mono_fps"], 1),
             })
@@ -1112,6 +1123,8 @@ def save_results_csv(results: dict, path: str) -> None:
                 "traj_len_m":          "",
                 "scale":               "",
                 "drift_m":             _fmt(r["stereo_drift"]),
+                "local_ate_start_m":   _fmt(r.get("stereo_local_ate_start")),
+                "local_ate_end_m":     _fmt(r.get("stereo_local_ate_end")),
                 "failures":            r["stereo_fail"],
                 "runtime_fps":         round(r["stereo_fps"], 1),
             })
@@ -1122,7 +1135,6 @@ def save_results_csv(results: dict, path: str) -> None:
         writer.writeheader()
         writer.writerows(rows)
     print(f"\nEvaluation results saved → {path}")
-
 
 
 all_results = {}
@@ -1280,6 +1292,8 @@ for config_file in SEQUENCES:
             "stereo_fps":            len(loader) / stereo_time,
             "mono_fail":             mono_vo.n_failures,
             "stereo_fail":           stereo_vo.n_failures,
+            "mono_inlier_ratios":    mono_vo.inlier_ratios,
+            "stereo_inlier_ratios":  stereo_vo.inlier_ratios,
         }
 
     else:
@@ -1331,17 +1345,23 @@ for config_file in SEQUENCES:
             mono_drift, stereo_drift, gt_poses, out_dir)
 
         all_results[seq] = {
-            "mono_drift":    mono_drift,
-            "stereo_drift":  stereo_drift,
-            "mono_fps":      len(loader) / mono_time,
-            "stereo_fps":    len(loader) / stereo_time,
-            "mono_fail":     mono_vo.n_failures,
-            "stereo_fail":   stereo_vo.n_failures,
-            "mono_rpe":      float("nan"),
-            "mono_rpe_rot":  float("nan"),
-            "stereo_rpe":    stereo_rpe_d1,
-            "stereo_rpe_rot": stereo_rpe_rot_d1,
-            "type":          "drift",
+            "mono_drift":            mono_drift,
+            "stereo_drift":          stereo_drift,
+            "mono_fps":              len(loader) / mono_time,
+            "stereo_fps":            len(loader) / stereo_time,
+            "mono_fail":             mono_vo.n_failures,
+            "stereo_fail":           stereo_vo.n_failures,
+            "mono_rpe":              float("nan"),
+            "mono_rpe_rot":          float("nan"),
+            "stereo_rpe":            stereo_rpe_d1,
+            "stereo_rpe_rot":        stereo_rpe_rot_d1,
+            "mono_local_ate_start":  mono_blocks["start_ate"],
+            "mono_local_ate_end":    mono_blocks["end_ate"],
+            "stereo_local_ate_start":stereo_blocks["start_ate"],
+            "stereo_local_ate_end":  stereo_blocks["end_ate"],
+            "type":                  "drift",
+            "mono_inlier_ratios":    mono_vo.inlier_ratios,
+            "stereo_inlier_ratios":  stereo_vo.inlier_ratios,
         }
 
 print("\n" + "=" * 65)
@@ -1381,6 +1401,93 @@ save_results_csv(all_results, "outputs/evaluation_results.csv")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  DYNAMIC SCENE SENSITIVITY  (Spec §VI — required quantification)
+#  RANSAC inlier ratio per frame measures how much tracked points are
+#  consistent with the static-scene ego-motion model.  A drop in ratio
+#  indicates dynamic objects contaminating the PnP solve.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def report_dynamic_sensitivity(all_results: dict,
+                               csv_path: str = "outputs/dynamic_results.csv") -> None:
+    """
+    Spec §VI: quantify dynamic-scene sensitivity via RANSAC inlier ratio.
+
+    For every sequence and both pipelines, report:
+      - mean inlier ratio across all tracking frames
+      - % of frames with ratio < 0.70  (potential dynamic contamination)
+      - % of frames with ratio < 0.50  (severe contamination / PnP failure)
+    Saves results to csv_path.
+    """
+    LOW_TH  = 0.70
+    SEV_TH  = 0.50
+
+    print("\n" + "=" * 72)
+    print("  DYNAMIC SCENE SENSITIVITY  —  RANSAC inlier ratio  (Spec §VI)")
+    print("  Low inlier ratio => tracked points inconsistent with static-scene")
+    print("  ego-motion model => evidence of dynamic object contamination.")
+    print("=" * 72)
+    hdr = (f"{'Sequence':<12} {'Pipeline':<9} {'Frames':>7} "
+           f"{'Mean ratio':>11} {'<0.70':>7} {'<0.50':>7}  Note")
+    print(hdr)
+    print("-" * 72)
+
+    csv_rows = []
+    for seq, res in all_results.items():
+        for label, key in [("Mono", "mono_inlier_ratios"),
+                           ("Stereo", "stereo_inlier_ratios")]:
+            ratios = res.get(key, [])
+            if not ratios:
+                print(f"{seq:<12} {label:<9} {'N/A':>7}")
+                continue
+            arr      = np.array(ratios, dtype=float)
+            n        = len(arr)
+            mean_r   = float(arr.mean())
+            pct_low  = float((arr < LOW_TH).mean()) * 100.0
+            pct_sev  = float((arr < SEV_TH).mean()) * 100.0
+
+            note = ""
+            if seq == "outdoors5":
+                note = "pedestrians/cyclists"
+            elif seq == "corridor3":
+                note = "homogeneous walls"
+
+            print(f"{seq:<12} {label:<9} {n:>7d} "
+                  f"{mean_r:>11.3f} {pct_low:>6.1f}% {pct_sev:>6.1f}%  "
+                  + (f"<-- {note}" if note else ""))
+
+            csv_rows.append({
+                "sequence":   seq,
+                "method":     label.lower(),
+                "frames":     n,
+                "mean_ratio": round(mean_r, 4),
+                "pct_low70":  round(pct_low, 2),
+                "pct_low50":  round(pct_sev, 2),
+                "note":       note,
+            })
+
+        print()
+
+    print("-" * 72)
+    print("Interpretation:")
+    print("  Mean ratio close to 1.0 => most tracked points fit static model (clean).")
+    print("  High <0.70 % on outdoors5 => dynamic objects inflate outlier count.")
+    print("  <0.50 frames include PnP failures (ratio=0.0) and severe contamination.")
+    print()
+
+    _DYN_FIELDS = ["sequence", "method", "frames", "mean_ratio",
+                   "pct_low70", "pct_low50", "note"]
+    os.makedirs(os.path.dirname(csv_path) or ".", exist_ok=True)
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=_DYN_FIELDS)
+        writer.writeheader()
+        writer.writerows(csv_rows)
+    print(f"  Dynamic sensitivity results saved → {csv_path}")
+
+
+report_dynamic_sensitivity(all_results)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  ILLUMINATION SENSITIVITY ABLATION  (Spec §VI — required quantification)
 #  Runs mono VO only with CLAHE toggled, compares tracking failures and ATE/drift
 #  against the baseline already stored in all_results.
@@ -1413,11 +1520,12 @@ def _run_single_clahe_abl(pipeline_cls, calib_obj, base_cfg, loader,
     return vo.n_failures, metric
 
 
-def run_clahe_ablation(all_results: dict) -> None:
+def run_clahe_ablation(all_results: dict,
+                       csv_path: str = "outputs/clahe_ablation.csv") -> None:
     """
     Spec §VI — quantify sensitivity to illumination changes.
     Runs BOTH mono and stereo VO with CLAHE toggled for every sequence,
-    then prints a comparison table of failures and ATE/drift.
+    prints a comparison table of failures and ATE/drift, and saves to csv_path.
     """
     print("\n" + "=" * 74)
     print("  ILLUMINATION SENSITIVITY ABLATION  —  CLAHE on vs off  (Spec §VI)")
@@ -1430,10 +1538,13 @@ def run_clahe_ablation(all_results: dict) -> None:
     def _clahe(b): return "ON " if b else "OFF"
     def _sign(d):  return "+" if d >= 0 else ""
 
+    csv_rows = []
+
     for config_file in SEQUENCES:
         seq        = load_run_config(config_file).sequence_name
         is_full_gt = seq in FULL_GT
         metric_lbl = "ATE" if is_full_gt else "drift"
+        metric_type = "ATE" if is_full_gt else "drift"
 
         for pipeline_label, base_cfg, align_mode, fail_key, metric_key in [
             ("Mono",   MONO_CONFIGS[seq],   "sim3",
@@ -1484,9 +1595,36 @@ def run_clahe_ablation(all_results: dict) -> None:
                   f"{metric_lbl} {_sign(metric_d)}{metric_d:.4f} m")
             print()
 
+            method = pipeline_label.lower()
+            csv_rows.append({
+                "sequence": seq, "method": method,
+                "clahe": _clahe(base_cfg.use_clahe).strip(),
+                "config": "production",
+                "failures": base_fail,
+                "metric_m": round(float(base_metric), 4) if np.isfinite(base_metric) else "",
+                "metric_type": metric_type,
+            })
+            csv_rows.append({
+                "sequence": seq, "method": method,
+                "clahe": _clahe(not base_cfg.use_clahe).strip(),
+                "config": "ablation",
+                "failures": abl_fail,
+                "metric_m": round(float(abl_metric), 4) if np.isfinite(abl_metric) else "",
+                "metric_type": metric_type,
+            })
+
         print("-" * 74)
 
     print("CLAHE ablation complete.\n")
+
+    _CLAHE_FIELDS = ["sequence", "method", "clahe", "config",
+                     "failures", "metric_m", "metric_type"]
+    os.makedirs(os.path.dirname(csv_path) or ".", exist_ok=True)
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=_CLAHE_FIELDS)
+        writer.writeheader()
+        writer.writerows(csv_rows)
+    print(f"  CLAHE ablation results saved → {csv_path}")
 
 
 run_clahe_ablation(all_results)

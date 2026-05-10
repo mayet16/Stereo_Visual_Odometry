@@ -87,6 +87,7 @@ class MonoVO:
         self.n_kf_updates  = 0
         self.n_vd_reinits  = 0
         self.n_e_reinits   = 0
+        self.inlier_ratios: List[float] = []  # PnP inlier ratio per frame (dynamic sensitivity)
         self.cur_pts: Optional[np.ndarray] = None
 
         # ── init state ────────────────────────────────────────────────────
@@ -256,6 +257,7 @@ class MonoVO:
                 self.n_lk_fails += 1
             else:
                 self.n_pnp_fails += 1
+            self.inlier_ratios.append(0.0)
             self.n_failures      += 1
             self._n_consec_fails += 1
 
@@ -302,6 +304,7 @@ class MonoVO:
         # 5. Velocity guard
         vel = float(np.linalg.norm(T_wc[:3, 3] - self._T_cur[:3, 3]))
         if vel > self.cfg.max_velocity:
+            self.inlier_ratios.append(inlier_mask.sum() / max(n_tracked, 1))
             self.n_failures      += 1
             self.n_vel_fails     += 1
             self._n_consec_fails += 1
@@ -320,6 +323,7 @@ class MonoVO:
         # 6. Accept pose
         self._T_prev = self._T_cur.copy()
         self._T_cur  = T_wc
+        self.inlier_ratios.append(inlier_mask.sum() / max(n_tracked, 1))
 
         self._last_delta_T   = invert_T(self._T_prev) @ self._T_cur
         self._has_delta      = True

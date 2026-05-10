@@ -55,6 +55,7 @@ class StereoVO:
         self.n_failures    = 0
         self.n_reinits     = 0   # map-replenishment events (stereo has no full relocalization)
         self.n_new_pts     = 0
+        self.inlier_ratios: List[float] = []  # PnP inlier ratio per frame (dynamic sensitivity)
 
         self._map3d: Optional[np.ndarray] = None
         self._map2d: Optional[np.ndarray] = None
@@ -165,6 +166,7 @@ class StereoVO:
 
         if n_tracked < self.cfg.pnp_min_inliers:
             self._log(f"[{self._frame_id:04d}] too few – hold")
+            self.inlier_ratios.append(0.0)
             self.n_failures += 1
             self.n_reinits  += 1
             if ok.sum() > 5:
@@ -193,6 +195,7 @@ class StereoVO:
 
         if R is None:
             self._log(f"[{self._frame_id:04d}] PnP failed – hold")
+            self.inlier_ratios.append(0.0)
             self.n_failures += 1
             self.n_reinits  += 1
             self._map3d = map3d_t
@@ -218,6 +221,7 @@ class StereoVO:
 
         if vel > self.cfg.max_velocity:
             self._log(f"[{self._frame_id:04d}] vel={vel:.3f} – hold")
+            self.inlier_ratios.append(inlier_mask.sum() / max(n_tracked, 1))
             self.n_failures += 1
             self.n_reinits  += 1
             self._map3d = map3d_t[inlier_mask]
@@ -231,6 +235,7 @@ class StereoVO:
         self._T_prev = self._T_cur.copy()
         self._T_cur  = T_wc
         n_in = inlier_mask.sum()
+        self.inlier_ratios.append(n_in / max(n_tracked, 1))
         self._log(f"[{self._frame_id:04d}] OK in={n_in}/{n_tracked} "
                   f"vel={vel:.4f}m pos={np.round(T_wc[:3,3], 3)}")
 
