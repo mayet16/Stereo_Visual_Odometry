@@ -177,11 +177,13 @@ class MonoVO:
             self._prev_img = img
             return None
 
-        # VD init: back-project frame0 features at expected_depth, then PnP
-        # to recover the metric init pose.  This anchors scale directly to
-        # expected_depth instead of relying on E-matrix triangulation depth,
-        # which is unreliable when rotational motion dominates (med_depth ≫
-        # expected_depth → scale collapse).
+        # VD init: back-project frame-0 features at expected_depth, then PnP to
+        # recover the metric init pose.  Anchors scale directly to expected_depth
+        # so world scale = 1 regardless of the rotation/translation mix in the
+        # init pair.  E-matrix triangulation gives wrong scale when rotation is
+        # dominant (room-scale sequences) because med_unit ≫ expected_depth and
+        # the rescale factor s = expected_depth / med_unit ≈ 0.04 — compressing
+        # all subsequent world coordinates by 20×.
         d0 = self.cfg.expected_depth
         cx, cy = float(self.K[0, 2]), float(self.K[1, 2])
         fx, fy = float(self.K[0, 0]), float(self.K[1, 1])
@@ -607,17 +609,20 @@ class MonoVO:
 
     # ── virtual-depth reinit ─────────────────────────────────────────────────
 
-    def _vd_reinit(self, img: np.ndarray) -> bool:
+    def _vd_reinit(self, img: np.ndarray,
+                   force_depth: Optional[float] = None) -> bool:
         """
         Back-project fresh FAST corners to the current median scene depth.
         Uses the actual depth from existing map points (not expected_depth)
-        to preserve world scale.
+        to preserve world scale.  Pass force_depth to override the scene
+        depth estimate (used by the scale-collapse guard to break the
+        feedback loop where a collapsed map returns a collapsed depth).
         """
         new2d = self.tracker.detect_grid(img)
         if len(new2d) < self.cfg.pnp_min_inliers:
             return False
 
-        d0 = self._get_scene_depth()
+        d0 = force_depth if force_depth is not None else self._get_scene_depth()
 
         cx, cy = self.K[0, 2], self.K[1, 2]
         fx, fy = self.K[0, 0], self.K[1, 1]
@@ -636,6 +641,12 @@ class MonoVO:
 
         self._map3d = pts3d_world
         self._map2d = new2d.astype(np.float32)
+        # Reset keyframe to the current frame.  Without this, _maybe_update_kf
+        # would triangulate from the stale (pre-collapse) KF pose against the
+        # freshly-scaled current pose — producing pts with wrong depths that
+        # immediately re-collapse the scale.
+        self._kf_img = img.copy()
+        self._kf_T   = self._T_cur.copy()
         self.n_vd_reinits += 1
         self._log(f"[{self._frame_id:04d}] VD-reinit  d0={d0:.2f}m")
         return True

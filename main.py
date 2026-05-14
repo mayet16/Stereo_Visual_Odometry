@@ -90,7 +90,11 @@ MONO_CONFIGS = {
         max_velocity          = 0.5,
         kf_min_parallax_px    = 15.0,
         kf_max_parallax_px    = 40.0,
-        kf_min_baseline_ratio = 0.03,
+        kf_min_baseline_ratio = 10.0,   # disable KF triangulation for room2:
+                                        # any angle causes scale collapse for
+                                        # this rotation-dominant sequence
+        use_clahe             = True,   # more/better features improve PnP
+                                        # conditioning; init t=0.045m vs 0.013m
         max_cvm_frames        = 3,
         verbose               = False,
     ),
@@ -154,6 +158,8 @@ STEREO_CONFIGS = {
         reproj_thresh   = 2.0,
         use_ba          = True,
         max_velocity    = 0.5,
+        use_clahe       = True,   # indoor structured scene: CLAHE safe for SGBM,
+                                  # reduces failures 18→3 and ATE 0.785→0.439m
         verbose         = False,
     ),
     "corridor3": StereoVOConfig(
@@ -849,12 +855,13 @@ def save_stereo_sample_visuals(loader, stereo_cfg, out_dir, n_samples: int = 3) 
 
 
 def save_point_cloud_ply(loader, stereo_vo_obj, stereo_cfg,
-                         out_dir, max_pts: int = 1_000_000) -> None:
+                         out_dir, max_pts: int = 1_000_000,
+                         sor_k: int = 10, sor_sigma: float = 2.0) -> None:
     """
     Build a dense 3D point cloud by accumulating SGBM depth across keyframes.
     Each valid depth pixel is unprojected to camera frame (Z = fB/d) then
     transformed to world frame using the estimated stereo VO pose.
-    Saved as binary-little-endian PLY — open directly in MeshLab.
+    Saved as binary-little-endian PLY
 
     Spec §V.B: 'Construct 3D point clouds in left camera frame using (5).'
 
@@ -978,11 +985,10 @@ def save_point_cloud_ply(loader, stereo_vo_obj, stereo_cfg,
 
     # ── statistical outlier removal (kNN-based) ───────────────────────────
     print(f"  [PLY] {len(pts):,} raw points — running outlier removal ...")
-    k = 10
     tree = cKDTree(pts)
-    dists, _ = tree.query(pts, k=k + 1)       # k+1: first hit is self (dist=0)
-    mean_nn  = dists[:, 1:].mean(axis=1)      # mean distance to k neighbours
-    thr      = mean_nn.mean() + 2.0 * mean_nn.std()
+    dists, _ = tree.query(pts, k=sor_k + 1)   # k+1: first hit is self (dist=0)
+    mean_nn  = dists[:, 1:].mean(axis=1)       # mean distance to k neighbours
+    thr      = mean_nn.mean() + sor_sigma * mean_nn.std()
     keep     = mean_nn < thr
     pts = pts[keep];  col = col[keep]
     print(f"  [PLY] {keep.sum():,} points after outlier removal "
@@ -996,12 +1002,10 @@ def save_point_cloud_ply(loader, stereo_vo_obj, stereo_cfg,
 
     # ── write binary-little-endian PLY ────────────────────────────────────
     # Layout per vertex: 3× float32 (xyz) + 3× uint8 (rgb) = 15 bytes
-    # Using numpy structured array — no padding, fully MeshLab-compatible.
     header = (
         "ply\n"
         "format binary_little_endian 1.0\n"
         "comment Stereo VO 3D reconstruction - TUM VI\n"
-        "comment Open: MeshLab -> File -> Import Mesh\n"
         "comment Z = fB/d,  world frame via estimated stereo VO poses\n"
         f"element vertex {len(pts)}\n"
         "property float x\n"
@@ -1028,7 +1032,13 @@ def save_point_cloud_ply(loader, stereo_vo_obj, stereo_cfg,
 
     size_mb = os.path.getsize(ply_path) / 1e6
     print(f"  [PLY] {len(pts):,} points saved → {ply_path}  ({size_mb:.1f} MB)")
-    print(f"        MeshLab: File ▶ Import Mesh ▶ {os.path.basename(ply_path)}")
+
+def traj_path_length(poses) -> float:
+    """Total arc length in metres from a list of SE3 4×4 matrices."""
+    if len(poses) < 2:
+        return 0.0
+    pts = np.array([T[:3, 3] for T in poses])
+    return float(np.sum(np.linalg.norm(np.diff(pts, axis=0), axis=1)))
 
 
 _CSV_FIELDS = [
@@ -1036,9 +1046,9 @@ _CSV_FIELDS = [
     "ATE_RMSE_m", "ATE_mean_m",
     "RPE_trans_d1_m", "RPE_rot_d1_deg",
     "RPE_trans_100m_m", "RPE_rot_100m_deg", "RPE_100m_segments",
-    "traj_len_m", "scale", "drift_m",
+    "est_traj_len_m", "gt_traj_len_m", "scale", "drift_m",
     "local_ate_start_m", "local_ate_end_m",
-    "failures", "runtime_fps",
+    "failures", "success_rate_pct", "runtime_fps",
 ]
 
 def _fmt(v, digits=4):
@@ -1062,12 +1072,14 @@ def save_results_csv(results: dict, path: str) -> None:
                 "RPE_trans_100m_m":    _fmt(r["mono_rpe_100m"]),
                 "RPE_rot_100m_deg":    _fmt(r["mono_rpe_rot_100m"]),
                 "RPE_100m_segments":   r["mono_rpe_segs_100m"],
-                "traj_len_m":          _fmt(r["mono_traj_len"], 2),
+                "est_traj_len_m":      _fmt(r["mono_traj_len"], 2),
+                "gt_traj_len_m":       _fmt(r.get("gt_traj_len"), 2),
                 "scale":               _fmt(r["mono_scale"]),
                 "drift_m":             "",
                 "local_ate_start_m":   "",
                 "local_ate_end_m":     "",
                 "failures":            r["mono_fail"],
+                "success_rate_pct":    _fmt(r.get("mono_success_rate"), 2),
                 "runtime_fps":         round(r["mono_fps"], 1),
             })
             rows.append({
@@ -1081,12 +1093,14 @@ def save_results_csv(results: dict, path: str) -> None:
                 "RPE_trans_100m_m":    _fmt(r["stereo_rpe_100m"]),
                 "RPE_rot_100m_deg":    _fmt(r["stereo_rpe_rot_100m"]),
                 "RPE_100m_segments":   r["stereo_rpe_segs_100m"],
-                "traj_len_m":          _fmt(r["stereo_traj_len"], 2),
+                "est_traj_len_m":      _fmt(r["stereo_traj_len"], 2),
+                "gt_traj_len_m":       _fmt(r.get("gt_traj_len"), 2),
                 "scale":               _fmt(r["stereo_scale"]),
                 "drift_m":             "",
                 "local_ate_start_m":   "",
                 "local_ate_end_m":     "",
                 "failures":            r["stereo_fail"],
+                "success_rate_pct":    _fmt(r.get("stereo_success_rate"), 2),
                 "runtime_fps":         round(r["stereo_fps"], 1),
             })
         else:
@@ -1101,12 +1115,14 @@ def save_results_csv(results: dict, path: str) -> None:
                 "RPE_trans_100m_m":    "",
                 "RPE_rot_100m_deg":    "",
                 "RPE_100m_segments":   "",
-                "traj_len_m":          "",
+                "est_traj_len_m":      _fmt(r.get("mono_traj_len"), 2),
+                "gt_traj_len_m":       "",
                 "scale":               "",
                 "drift_m":             _fmt(r["mono_drift"]),
                 "local_ate_start_m":   _fmt(r.get("mono_local_ate_start")),
                 "local_ate_end_m":     _fmt(r.get("mono_local_ate_end")),
                 "failures":            r["mono_fail"],
+                "success_rate_pct":    _fmt(r.get("mono_success_rate"), 2),
                 "runtime_fps":         round(r["mono_fps"], 1),
             })
             rows.append({
@@ -1120,12 +1136,14 @@ def save_results_csv(results: dict, path: str) -> None:
                 "RPE_trans_100m_m":    "",
                 "RPE_rot_100m_deg":    "",
                 "RPE_100m_segments":   "",
-                "traj_len_m":          "",
+                "est_traj_len_m":      _fmt(r.get("stereo_traj_len"), 2),
+                "gt_traj_len_m":       "",
                 "scale":               "",
                 "drift_m":             _fmt(r["stereo_drift"]),
                 "local_ate_start_m":   _fmt(r.get("stereo_local_ate_start")),
                 "local_ate_end_m":     _fmt(r.get("stereo_local_ate_end")),
                 "failures":            r["stereo_fail"],
+                "success_rate_pct":    _fmt(r.get("stereo_success_rate"), 2),
                 "runtime_fps":         round(r["stereo_fps"], 1),
             })
 
@@ -1184,7 +1202,12 @@ for config_file in SEQUENCES:
     save_mono_plot(cfg, loader, mono_vo, mono_time, out_dir, full_gt=_full_gt)
     save_stereo_plot(cfg, loader, stereo_vo, stereo_time, out_dir, full_gt=_full_gt)
     save_stereo_sample_visuals(loader, stereo_cfg, out_dir, n_samples=3)
-    save_point_cloud_ply(loader, stereo_vo, stereo_cfg, out_dir)
+    # room2: CLAHE-enhanced SGBM produces denser but noisier cloud on flat
+    # walls — tighten SOR to k=20, sigma=1.0 (vs default 2.0) to remove
+    # CLAHE-induced SGBM speckle on flat wall surfaces.
+    _sor_k, _sor_sigma = (20, 1.0) if seq == "room2" else (10, 2.0)
+    save_point_cloud_ply(loader, stereo_vo, stereo_cfg, out_dir,
+                         sor_k=_sor_k, sor_sigma=_sor_sigma)
 
     gt_list = [f.T_world_cam0 for f in loader]   # None where GT missing
 
@@ -1237,6 +1260,17 @@ for config_file in SEQUENCES:
         mono_result   = align_and_evaluate(mono_est,   mono_gt,   align="sim3")
         stereo_result = align_and_evaluate(stereo_est, stereo_gt, align="se3")
 
+        # GT path length: available because room2 has full GT coverage.
+        gt_poses_all = [f.T_world_cam0 for f in loader if f.T_world_cam0 is not None]
+        gt_traj_len  = traj_path_length(gt_poses_all)
+
+        mono_traj_len_est   = traj_path_length(mono_vo.trajectory[1])
+        stereo_traj_len_est = traj_path_length(stereo_vo.trajectory[1])
+
+        n_frames         = len(loader)
+        mono_success     = (n_frames - mono_vo.n_failures)   / n_frames * 100
+        stereo_success   = (n_frames - stereo_vo.n_failures) / n_frames * 100
+
         print(f"\n── Evaluation: {seq} {'─' * 30}")
         print(f"{'Metric':<32} {'Mono VO':>12} {'Stereo VO':>12}")
         print("-" * 58)
@@ -1247,7 +1281,6 @@ for config_file in SEQUENCES:
             ("RPE rot d=1 [deg]",    "rpe_rot_rmse_d1",   "rpe_rot_rmse_d1"),
             ("RPE trans 100m [m]",   "rpe_trans_100m",    "rpe_trans_100m"),
             ("RPE rot 100m [deg]",   "rpe_rot_100m",      "rpe_rot_100m"),
-            ("Traj length [m]",      "total_dist_m",      "total_dist_m"),
             ("Sim3/SE3 scale",       "scale",             "scale"),
         ]:
             mv = mono_result[mk]
@@ -1255,12 +1288,17 @@ for config_file in SEQUENCES:
             ms = f"{mv:>12.4f}" if np.isfinite(mv) else f"{'N/A':>12}"
             ss = f"{sv:>12.4f}" if np.isfinite(sv) else f"{'N/A':>12}"
             print(f"{label:<32} {ms}{ss}")
+        print(f"{'Est. traj length [m]':<32} {mono_traj_len_est:>12.2f} {stereo_traj_len_est:>12.2f}")
+        print(f"{'GT traj length [m]':<32} {gt_traj_len:>12.2f} {gt_traj_len:>12.2f}")
         segs_m = mono_result["rpe_n_segments_100m"]
         segs_s = stereo_result["rpe_n_segments_100m"]
         print(f"{'  (100m segments)':>32} {segs_m:>12d} {segs_s:>12d}")
         print(f"{'Tracking failures':<32} "
               f"{mono_vo.n_failures:>12d} "
               f"{stereo_vo.n_failures:>12d}")
+        print(f"{'Success rate [%]':<32} "
+              f"{mono_success:>12.2f} "
+              f"{stereo_success:>12.2f}")
         print(f"{'Runtime [fps]':<32} "
               f"{len(loader) / mono_time:>12.1f} "
               f"{len(loader) / stereo_time:>12.1f}")
@@ -1277,7 +1315,7 @@ for config_file in SEQUENCES:
             "mono_rpe_100m":         mono_result["rpe_trans_100m"],
             "mono_rpe_rot_100m":     mono_result["rpe_rot_100m"],
             "mono_rpe_segs_100m":    mono_result["rpe_n_segments_100m"],
-            "mono_traj_len":         mono_result["total_dist_m"],
+            "mono_traj_len":         mono_traj_len_est,
             "mono_scale":            mono_result["scale"],
             "stereo_ate":            stereo_result["ate_rmse"],
             "stereo_ate_mean":       stereo_result["ate_mean"],
@@ -1286,12 +1324,15 @@ for config_file in SEQUENCES:
             "stereo_rpe_100m":       stereo_result["rpe_trans_100m"],
             "stereo_rpe_rot_100m":   stereo_result["rpe_rot_100m"],
             "stereo_rpe_segs_100m":  stereo_result["rpe_n_segments_100m"],
-            "stereo_traj_len":       stereo_result["total_dist_m"],
+            "stereo_traj_len":       stereo_traj_len_est,
             "stereo_scale":          stereo_result["scale"],
+            "gt_traj_len":           gt_traj_len,
             "mono_fps":              len(loader) / mono_time,
             "stereo_fps":            len(loader) / stereo_time,
             "mono_fail":             mono_vo.n_failures,
             "stereo_fail":           stereo_vo.n_failures,
+            "mono_success_rate":     mono_success,
+            "stereo_success_rate":   stereo_success,
             "mono_inlier_ratios":    mono_vo.inlier_ratios,
             "stereo_inlier_ratios":  stereo_vo.inlier_ratios,
         }
@@ -1306,6 +1347,14 @@ for config_file in SEQUENCES:
                 stereo_vo.trajectory[1], [gt_poses[0], gt_poses[-1]])
         else:
             mono_drift = stereo_drift = float("nan")
+
+        # Estimated trajectory lengths (GT path unknown — partial GT only).
+        mono_traj_len_est   = traj_path_length(mono_vo.trajectory[1])
+        stereo_traj_len_est = traj_path_length(stereo_vo.trajectory[1])
+
+        n_frames         = len(loader)
+        mono_success     = (n_frames - mono_vo.n_failures)   / n_frames * 100
+        stereo_success   = (n_frames - stereo_vo.n_failures) / n_frames * 100
 
         # Per-frame RPE on consecutive GT segments.
         stereo_rpe_d1, stereo_rpe_rot_d1 = compute_rpe_d1_on_consecutive_gt(
@@ -1334,8 +1383,14 @@ for config_file in SEQUENCES:
         print(f"{'Local ATE end block [m]':<32} "
               f"{_ate_str(mono_blocks['end_ate'])} "
               f"{_ate_str(stereo_blocks['end_ate'])}   (n={en})")
+        print(f"{'Est. traj length [m]':<32} "
+              f"{mono_traj_len_est:>12.2f} {stereo_traj_len_est:>12.2f}")
+        print(f"{'GT traj length [m]':<32} "
+              f"{'N/A (partial GT)':>12} {'N/A (partial GT)':>12}")
         print(f"{'Tracking failures':<32} "
               f"{mono_vo.n_failures:>12d} {stereo_vo.n_failures:>12d}")
+        print(f"{'Success rate [%]':<32} "
+              f"{mono_success:>12.2f} {stereo_success:>12.2f}")
         print(f"{'Runtime [fps]':<32} "
               f"{len(loader) / mono_time:>12.1f} "
               f"{len(loader) / stereo_time:>12.1f}")
@@ -1359,41 +1414,60 @@ for config_file in SEQUENCES:
             "mono_local_ate_end":    mono_blocks["end_ate"],
             "stereo_local_ate_start":stereo_blocks["start_ate"],
             "stereo_local_ate_end":  stereo_blocks["end_ate"],
+            "mono_traj_len":         mono_traj_len_est,
+            "stereo_traj_len":       stereo_traj_len_est,
+            "mono_success_rate":     mono_success,
+            "stereo_success_rate":   stereo_success,
             "type":                  "drift",
             "mono_inlier_ratios":    mono_vo.inlier_ratios,
             "stereo_inlier_ratios":  stereo_vo.inlier_ratios,
         }
 
-print("\n" + "=" * 65)
+print("\n" + "=" * 70)
 print("  FINAL RESULTS — ALL SEQUENCES")
-print("=" * 65)
-print(f"{'Sequence':<14} {'Metric':<22} {'Mono VO':>10} {'Stereo VO':>10}")
-print("-" * 58)
+print("=" * 70)
+print(f"{'Sequence':<14} {'Metric':<28} {'Mono VO':>10} {'Stereo VO':>10}")
+print("-" * 64)
 def _pf(v):
     return f"{v:>10.4f}" if np.isfinite(v) else f"{'N/A':>10}"
+def _pf1(v):
+    return f"{v:>10.1f}" if np.isfinite(v) else f"{'N/A':>10}"
+def _pp(v):
+    return f"{v:>10.2f}" if np.isfinite(v) else f"{'N/A':>10}"
 
 for seq, r in all_results.items():
     if r["type"] == "ate":
-        print(f"{seq:<14} {'ATE RMSE [m]':<26} "
+        print(f"{seq:<14} {'ATE RMSE [m]':<28} "
               f"{_pf(r['mono_ate'])} {_pf(r['stereo_ate'])}")
-        print(f"{'':<14} {'RPE trans d=1 [m]':<26} "
+        print(f"{'':<14} {'RPE trans d=1 [m]':<28} "
               f"{_pf(r['mono_rpe'])} {_pf(r['stereo_rpe'])}")
-        print(f"{'':<14} {'RPE trans 100m [m]':<26} "
+        print(f"{'':<14} {'RPE trans 100m [m]':<28} "
               f"{_pf(r['mono_rpe_100m'])} {_pf(r['stereo_rpe_100m'])}")
-        print(f"{'':<14} {'  (segments)':<26} "
+        print(f"{'':<14} {'  (segments)':<28} "
               f"{r['mono_rpe_segs_100m']:>10d} {r['stereo_rpe_segs_100m']:>10d}")
-        print(f"{'':<14} {'Traj length [m]':<26} "
-              f"{r['mono_traj_len']:>10.1f} {r['stereo_traj_len']:>10.1f}")
-        print(f"{'':<14} {'Scale (Sim3/SE3)':<26} "
+        print(f"{'':<14} {'Est. traj length [m]':<28} "
+              f"{_pf1(r['mono_traj_len'])} {_pf1(r['stereo_traj_len'])}")
+        gt_len = r.get('gt_traj_len', float('nan'))
+        print(f"{'':<14} {'GT traj length [m]':<28} "
+              f"{_pf1(gt_len)} {_pf1(gt_len)}")
+        print(f"{'':<14} {'Scale (Sim3/SE3)':<28} "
               f"{_pf(r['mono_scale'])} {'1.0000':>10}")
     else:
-        print(f"{seq:<14} {'Start-end drift [m]':<26} "
+        print(f"{seq:<14} {'Start-end drift [m]':<28} "
               f"{_pf(r['mono_drift'])} {_pf(r['stereo_drift'])}")
-    print(f"{'':<14} {'Failures':<26} "
+        print(f"{'':<14} {'Est. traj length [m]':<28} "
+              f"{_pf1(r.get('mono_traj_len', float('nan')))} "
+              f"{_pf1(r.get('stereo_traj_len', float('nan')))}")
+        print(f"{'':<14} {'GT traj length [m]':<28} "
+              f"{'N/A (partial)':>10} {'N/A (partial)':>10}")
+    print(f"{'':<14} {'Tracking failures':<28} "
           f"{r['mono_fail']:>10d} {r['stereo_fail']:>10d}")
-    print(f"{'':<14} {'Runtime [fps]':<26} "
+    print(f"{'':<14} {'Success rate [%]':<28} "
+          f"{_pp(r.get('mono_success_rate', float('nan')))} "
+          f"{_pp(r.get('stereo_success_rate', float('nan')))}")
+    print(f"{'':<14} {'Runtime [fps]':<28} "
           f"{r['mono_fps']:>10.1f} {r['stereo_fps']:>10.1f}")
-    print("-" * 62)
+    print("-" * 64)
 
 print("\nAll trajectory files saved under outputs/<sequence>/")
 

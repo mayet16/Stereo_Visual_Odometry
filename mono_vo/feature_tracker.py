@@ -23,6 +23,7 @@ class FeatureConfig:
     method:           str   = "orb"    # "orb" | "sift"
     max_features:     int   = 2000
     ratio_thresh:     float = 0.75     # Lowe ratio test
+    use_cross_check:  bool  = False    # symmetric filter on top of ratio test
     min_matches:      int   = 50       # abort frame if fewer survive
     # Optical-flow params (Lucas-Kanade)
     lk_win_size:      int   = 21
@@ -79,12 +80,18 @@ class FeatureTracker:
 
         # kNN match k=2, then Lowe ratio test
         raw = self._matcher.knnMatch(des0, des1, k=2)
-        good = []
-        for pair in raw:
-            if len(pair) == 2:
-                m, n = pair
-                if m.distance < self.cfg.ratio_thresh * n.distance:
-                    good.append(m)
+        good = [pair[0] for pair in raw
+                if len(pair) == 2
+                and pair[0].distance < self.cfg.ratio_thresh * pair[1].distance]
+
+        # optional symmetric cross-check
+        if self.cfg.use_cross_check and good:
+            raw_rev = self._matcher.knnMatch(des1, des0, k=2)
+            rev_pairs = {(pair[0].queryIdx, pair[0].trainIdx)
+                         for pair in raw_rev
+                         if len(pair) == 2
+                         and pair[0].distance < self.cfg.ratio_thresh * pair[1].distance}
+            good = [m for m in good if (m.trainIdx, m.queryIdx) in rev_pairs]
 
         if len(good) < self.cfg.min_matches:
             return np.empty((0, 2), np.float32), np.empty((0, 2), np.float32)
