@@ -229,6 +229,64 @@ def rpe_distance_based(
     }
 
 
+# ── rotation-based RPE (spec: θ=60° segments) ────────────────────────────────
+
+def rpe_rotation_based(
+    est:            List[np.ndarray],
+    gt:             List[np.ndarray],
+    target_rot_deg: float = 60.0,
+) -> Dict:
+    """
+    RPE_rot over segments whose cumulative ESTIMATED rotation ≈ target_rot_deg.
+    Spec: θ=60° for rotation — measures how much rotation drifts per 60° of travel.
+
+    Segment endpoints defined from estimated trajectory (consistent with
+    rpe_distance_based which uses estimated path length for 100m segments).
+    """
+    n = len(est)
+    target_rot_rad = np.radians(target_rot_deg)
+
+    # Cumulative rotation along estimated trajectory
+    step_rots = np.zeros(n)
+    for i in range(1, n):
+        dR = est[i - 1][:3, :3].T @ est[i][:3, :3]
+        cos_th = float(np.clip((np.trace(dR) - 1) / 2, -1, 1))
+        step_rots[i] = np.arccos(cos_th)
+    cumulative_rot = np.cumsum(step_rots)
+    total_rot_deg  = float(np.degrees(cumulative_rot[-1]))
+
+    rot_errs = []
+    for i in range(n - 1):
+        target = cumulative_rot[i] + target_rot_rad
+        if target > cumulative_rot[-1]:
+            break
+        j = int(np.searchsorted(cumulative_rot, target))
+        if j >= n:
+            break
+        dT_est = np.linalg.inv(est[i]) @ est[j]
+        dT_gt  = np.linalg.inv(gt[i])  @ gt[j]
+        E      = np.linalg.inv(dT_gt)  @ dT_est
+        cos_th = float(np.clip((np.trace(E[:3, :3]) - 1) / 2, -1, 1))
+        rot_errs.append(float(np.degrees(np.arccos(cos_th))))
+
+    if len(rot_errs) == 0:
+        return {
+            "rpe_rot_rmse":   float("nan"),
+            "n_segments":     0,
+            "total_rot_deg":  total_rot_deg,
+            "target_rot_deg": target_rot_deg,
+        }
+
+    re = np.array(rot_errs)
+    return {
+        "rpe_rot_rmse":   float(np.sqrt((re ** 2).mean())),
+        "n_segments":     len(re),
+        "total_rot_deg":  total_rot_deg,
+        "target_rot_deg": target_rot_deg,
+        "rot_errors":     re,
+    }
+
+
 # ── one-call wrapper ──────────────────────────────────────────────────────────
 
 def align_and_evaluate(
@@ -247,15 +305,18 @@ def align_and_evaluate(
     ate    = ate_rmse(result["traj_aligned"], gt)
     rpe_1  = rpe(result["traj_aligned"], gt, delta=1)
     rpe_10 = rpe(result["traj_aligned"], gt, delta=10)
-    rpe_d  = rpe_distance_based(result["traj_aligned"], gt, target_dist=100.0)
+    rpe_d   = rpe_distance_based(result["traj_aligned"], gt, target_dist=100.0)
+    rpe_r   = rpe_rotation_based(result["traj_aligned"], gt, target_rot_deg=60.0)
 
     result.update(ate)
-    result["rpe_trans_rmse_d1"]   = rpe_1["rpe_trans_rmse"]
-    result["rpe_rot_rmse_d1"]     = rpe_1["rpe_rot_rmse"]
-    result["rpe_trans_rmse_d10"]  = rpe_10["rpe_trans_rmse"]
-    result["rpe_rot_rmse_d10"]    = rpe_10["rpe_rot_rmse"]
-    result["rpe_trans_100m"]      = rpe_d["rpe_trans_rmse"]
-    result["rpe_rot_100m"]        = rpe_d["rpe_rot_rmse"]
-    result["rpe_n_segments_100m"] = rpe_d["n_segments"]
-    result["total_dist_m"]        = rpe_d["total_dist_m"]
+    result["rpe_trans_rmse_d1"]    = rpe_1["rpe_trans_rmse"]
+    result["rpe_rot_rmse_d1"]      = rpe_1["rpe_rot_rmse"]
+    result["rpe_trans_rmse_d10"]   = rpe_10["rpe_trans_rmse"]
+    result["rpe_rot_rmse_d10"]     = rpe_10["rpe_rot_rmse"]
+    result["rpe_trans_100m"]       = rpe_d["rpe_trans_rmse"]
+    result["rpe_n_segments_100m"]  = rpe_d["n_segments"]
+    result["total_dist_m"]         = rpe_d["total_dist_m"]
+    result["rpe_rot_60deg"]        = rpe_r["rpe_rot_rmse"]
+    result["rpe_n_segments_60deg"] = rpe_r["n_segments"]
+    result["total_rot_deg"]        = rpe_r["total_rot_deg"]
     return result

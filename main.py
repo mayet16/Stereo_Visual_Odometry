@@ -403,67 +403,6 @@ def run_stereo(loader, seq, cfg, show: bool = True):
 
 
 
-def save_plot(cfg, loader, mono_vo, stereo_vo,
-              mono_result, stereo_result, out_dir):
-    """Save top-down + ATE-over-time comparison plot (room2)."""
-    gt_arr    = np.array([f.T_world_cam0[:3, 3]
-                          for f in loader if f.T_world_cam0 is not None])
-    mono_al   = np.array([T[:3, 3] for T in mono_result["traj_aligned"]])
-    stereo_al = np.array([T[:3, 3] for T in stereo_result["traj_aligned"]])
-
-    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
-
-    ax = axes[0]
-    ax.plot(gt_arr[:, 0],    gt_arr[:, 1],    "g--", lw=1.5, label="GT")
-    ax.scatter(gt_arr[0,  0], gt_arr[0,  1], c="lime", s=100, zorder=6,
-               marker="*", label="GT start")
-    ax.scatter(gt_arr[-1, 0], gt_arr[-1, 1], c="gold", s=100, zorder=6,
-               marker="*", label="GT end")
-    ax.plot(mono_al[:, 0],   mono_al[:, 1],   "b-",  lw=1.0, alpha=0.8,
-            label=f"Mono VO (Sim3, ATE={mono_result['ate_rmse']:.3f}m)")
-    ax.scatter(mono_al[0,  0], mono_al[0,  1], c="cyan",   s=60, zorder=5,
-               marker="o", label="Mono est start")
-    ax.scatter(mono_al[-1, 0], mono_al[-1, 1], c="cyan",   s=60, zorder=5,
-               marker="D", label="Mono est end")
-    ax.plot(stereo_al[:, 0], stereo_al[:, 1], "r-",  lw=1.2,
-            label=f"Stereo VO (SE3, ATE={stereo_result['ate_rmse']:.3f}m)")
-    ax.scatter(stereo_al[0,  0], stereo_al[0,  1], c="orange", s=60, zorder=5,
-               marker="o", label="Stereo est start")
-    ax.scatter(stereo_al[-1, 0], stereo_al[-1, 1], c="orange", s=60, zorder=5,
-               marker="D", label="Stereo est end")
-    ax.set_xlabel("x [m]"); ax.set_ylabel("y [m]")
-    ax.set_title("Top-down (aligned)"); ax.legend(fontsize=8)
-    ax.set_aspect("equal")
-
-    ax2 = axes[1]
-    mono_ts   = collect_gt_timestamps(
-        loader, mono_vo.trajectory[1],
-        np.array(mono_vo.trajectory[0]))
-    stereo_ts = collect_gt_timestamps(
-        loader, stereo_vo.trajectory[1],
-        np.array(stereo_vo.trajectory[0]))
-    if len(mono_ts):   mono_ts   -= mono_ts[0]
-    if len(stereo_ts): stereo_ts -= stereo_ts[0]
-
-    if ("errors" in mono_result
-            and len(mono_ts) == len(mono_result["errors"])):
-        ax2.plot(mono_ts,   mono_result["errors"],   "b-",
-                 lw=0.8, label="Mono ATE")
-    if ("errors" in stereo_result
-            and len(stereo_ts) == len(stereo_result["errors"])):
-        ax2.plot(stereo_ts, stereo_result["errors"], "r-",
-                 lw=0.8, label="Stereo ATE")
-    ax2.set_xlabel("time [s]"); ax2.set_ylabel("ATE [m]")
-    ax2.set_title("ATE over time"); ax2.legend(fontsize=8)
-    ax2.set_ylim(bottom=0)
-
-    plt.suptitle(f"Mono vs Stereo VO — {cfg.sequence_name}", fontsize=12)
-    plt.tight_layout()
-    path = os.path.join(out_dir, "comparison.png")
-    plt.savefig(path, dpi=120); plt.close()
-    print(f"  Saved {path}")
-
-
 def save_mono_plot(cfg, loader, mono_vo, mono_time, out_dir, full_gt: bool = True):
     """Save mono VO 2-D trajectory.
     full_gt=True  → Sim3-aligned + ATE  (room2 style)
@@ -472,14 +411,17 @@ def save_mono_plot(cfg, loader, mono_vo, mono_time, out_dir, full_gt: bool = Tru
     ts  = np.array(mono_vo.trajectory[0]); ts -= ts[0]
     fps = len(loader) / mono_time if mono_time > 0 else 0.0
 
-    # ── gather GT ─────────────────────────────────────────────────────────────
     all_gt_poses = [f.T_world_cam0 for f in loader if f.T_world_cam0 is not None]
     gt_arr = np.array([T[:3, 3] for T in all_gt_poses]) if all_gt_poses else np.empty((0, 3))
 
     fig, (ax, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+    fig.patch.set_facecolor("#0e0e0e")
+    for _a in (ax, ax2):
+        _a.set_facecolor("#111111")
+        _a.tick_params(colors="white", labelsize=7)
+        for _s in _a.spines.values(): _s.set_edgecolor("#333333")
 
     if full_gt:
-        # ── Sim3-aligned ATE path (room2) ─────────────────────────────────────
         mono_aligned, ate_val, ate_errors = None, float("nan"), None
         est_poses, gt_poses              = collect_gt(loader, mono_vo.trajectory[1])
         if len(gt_poses) > 10:
@@ -489,19 +431,20 @@ def save_mono_plot(cfg, loader, mono_vo, mono_time, out_dir, full_gt: bool = Tru
             ate_errors   = result.get("errors", None)
 
         if len(gt_arr):
-            ax.plot(gt_arr[:, 0], gt_arr[:, 1], "g--", lw=1.5, label="GT")
+            ax.plot(gt_arr[:, 0], gt_arr[:, 1], color="#A5D6A7", lw=1.0, ls="--",
+                    alpha=0.85, label="GT")
             ax.scatter(gt_arr[0,  0], gt_arr[0,  1], c="lime", s=100, zorder=6,
                        marker="*", label="GT start")
             ax.scatter(gt_arr[-1, 0], gt_arr[-1, 1], c="gold", s=100, zorder=6,
                        marker="*", label="GT end")
         if mono_aligned is not None:
-            ax.plot(mono_aligned[:, 0], mono_aligned[:, 1], "b-", lw=1.2,
-                    label=f"Mono VO (Sim3-aligned, ATE={ate_val:.3f}m)")
+            ax.plot(mono_aligned[:, 0], mono_aligned[:, 1], color="#4FC3F7", lw=1.2,
+                    label="Mono VO")
             ax.scatter(mono_aligned[0,  0], mono_aligned[0,  1], c="blue", s=60,
                        zorder=5, marker="o", label="est start")
             ax.scatter(mono_aligned[-1, 0], mono_aligned[-1, 1], c="red",  s=60,
                        zorder=5, marker="D", label="est end")
-        ax.set_title("Top-down x–y  (Sim3-aligned)")
+        ax.set_title("Top-down x–y  (Sim3-aligned)", color="white")
 
         if ate_errors is not None:
             aligned_ts = collect_gt_timestamps(loader, mono_vo.trajectory[1], ts)
@@ -509,28 +452,27 @@ def save_mono_plot(cfg, loader, mono_vo, mono_time, out_dir, full_gt: bool = Tru
                 aligned_ts = aligned_ts - aligned_ts[0]
             n = min(len(aligned_ts), len(ate_errors))
             if n:
-                ax2.plot(aligned_ts[:n], ate_errors[:n], "b-", lw=0.8, label="Mono ATE")
-            ax2.set_xlabel("time [s]"); ax2.set_ylabel("ATE [m]")
-            ax2.set_title("ATE over time  (Sim3-aligned)")
+                ax2.plot(aligned_ts[:n], ate_errors[:n], color="#4FC3F7", lw=0.8, label="Mono ATE")
+            ax2.set_xlabel("time [s]", color="white")
+            ax2.set_ylabel("ATE [m]", color="white")
+            ax2.set_title("ATE over time  (Sim3-aligned)", color="white")
             ax2.set_ylim(bottom=0)
-            ax2.legend(fontsize=8)
+            ax2.legend(fontsize=8, facecolor="#222222", labelcolor="white")
 
         plt.suptitle(f"Monocular VO — {cfg.sequence_name}  |  "
                      f"failures={mono_vo.n_failures}   ATE={ate_val:.3f}m   fps={fps:.0f}",
-                     fontsize=11)
+                     fontsize=11, color="white")
     else:
-        # ── start-aligned drift path (corridor3/outdoors5) ────────────────────
         drift_m = float("nan")
         if len(all_gt_poses) >= 2:
             drift_m = start_end_drift(mono_vo.trajectory[1],
                                       [all_gt_poses[0], all_gt_poses[-1]])
 
-        # Apply start-pose alignment: shift trajectory so frame-0 = GT frame-0
         T_a = all_gt_poses[0] @ np.linalg.inv(mono_vo.trajectory[1][0]) \
               if all_gt_poses else np.eye(4)
         mono_sa = np.array([(T_a @ T)[:3, 3] for T in mono_vo.trajectory[1]])
 
-        ax.plot(mono_sa[:, 0], mono_sa[:, 1], "b-", lw=1.2,
+        ax.plot(mono_sa[:, 0], mono_sa[:, 1], color="#4FC3F7", lw=1.2,
                 label=f"Mono VO (start-aligned, drift={drift_m:.2f}m)")
         ax.scatter(mono_sa[0,  0], mono_sa[0,  1], c="blue", s=60, zorder=5, marker="o",
                    label="est start")
@@ -542,24 +484,27 @@ def save_mono_plot(cfg, loader, mono_vo, mono_time, out_dir, full_gt: bool = Tru
         if len(gt_arr) >= 2:
             ax.scatter(gt_arr[-1, 0], gt_arr[-1, 1], c="gold", s=100, zorder=6, marker="*",
                        label="GT end")
-        ax.set_title("Top-down x–y  (start-aligned to GT)")
+        ax.set_title("Top-down x–y  (start-aligned to GT)", color="white")
 
-        ax2.plot(ts, mono_sa[:, 0], "b-",  lw=0.8, label="x")
-        ax2.plot(ts, mono_sa[:, 1], "r-",  lw=0.8, label="y")
-        ax2.set_xlabel("time [s]"); ax2.set_ylabel("[m]")
-        ax2.set_title("x–y position over time  (start-aligned)")
-        ax2.legend(fontsize=8)
+        ax2.plot(ts, mono_sa[:, 0], color="#4FC3F7", lw=0.8, label="x")
+        ax2.plot(ts, mono_sa[:, 1], color="#EF9A9A", lw=0.8, label="y")
+        ax2.set_xlabel("time [s]", color="white")
+        ax2.set_ylabel("[m]", color="white")
+        ax2.set_title("x–y position over time  (start-aligned)", color="white")
+        ax2.legend(fontsize=8, facecolor="#222222", labelcolor="white")
 
         plt.suptitle(f"Monocular VO — {cfg.sequence_name}  |  "
                      f"failures={mono_vo.n_failures}   "
                      f"start-end drift={drift_m:.3f}m   fps={fps:.0f}",
-                     fontsize=11)
+                     fontsize=11, color="white")
 
-    ax.set_xlabel("x [m]"); ax.set_ylabel("y [m]")
-    ax.legend(fontsize=8); ax.set_aspect("equal")
+    ax.set_xlabel("x [m]", color="white")
+    ax.set_ylabel("y [m]", color="white")
+    ax.legend(fontsize=8, facecolor="#222222", labelcolor="white", loc="upper left")
+    ax.set_aspect("equal")
     plt.tight_layout()
     path = os.path.join(out_dir, "mono_traj.png")
-    plt.savefig(path, dpi=120); plt.close()
+    plt.savefig(path, dpi=120, facecolor=fig.get_facecolor()); plt.close()
     print(f"  Saved {path}")
 
 
@@ -575,9 +520,13 @@ def save_stereo_plot(cfg, loader, stereo_vo, stereo_time, out_dir, full_gt: bool
     gt_arr = np.array([T[:3, 3] for T in all_gt_poses]) if all_gt_poses else np.empty((0, 3))
 
     fig, (ax, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+    fig.patch.set_facecolor("#0e0e0e")
+    for _a in (ax, ax2):
+        _a.set_facecolor("#111111")
+        _a.tick_params(colors="white", labelsize=7)
+        for _s in _a.spines.values(): _s.set_edgecolor("#333333")
 
     if full_gt:
-        # ── SE3-aligned ATE path (room2) ──────────────────────────────────────
         est_poses, gt_poses = collect_gt(loader, stereo_vo.trajectory[1])
         stereo_aligned, ate_val, ate_errors = None, float("nan"), None
         if len(gt_poses) > 10:
@@ -588,22 +537,23 @@ def save_stereo_plot(cfg, loader, stereo_vo, stereo_time, out_dir, full_gt: bool
 
         if stereo_aligned is not None:
             if len(gt_arr):
-                ax.plot(gt_arr[:, 0], gt_arr[:, 1], "g--", lw=1.2, label="GT")
+                ax.plot(gt_arr[:, 0], gt_arr[:, 1], color="#A5D6A7", lw=1.0, ls="--",
+                        alpha=0.85, label="GT")
                 ax.scatter(gt_arr[0,  0], gt_arr[0,  1], c="lime", s=100, zorder=6,
                            marker="*", label="GT start")
                 ax.scatter(gt_arr[-1, 0], gt_arr[-1, 1], c="gold", s=100, zorder=6,
                            marker="*", label="GT end")
-            ax.plot(stereo_aligned[:, 0], stereo_aligned[:, 1], "r-", lw=1.0,
-                    label=f"Stereo VO (SE3-aligned, ATE={ate_val:.3f}m)")
+            ax.plot(stereo_aligned[:, 0], stereo_aligned[:, 1], color="#EF9A9A", lw=1.0,
+                    label="Stereo VO")
             ax.scatter(stereo_aligned[0,  0], stereo_aligned[0,  1], c="blue", s=60,
                        zorder=5, marker="o", label="est start")
             ax.scatter(stereo_aligned[-1, 0], stereo_aligned[-1, 1], c="red",  s=60,
                        zorder=5, marker="D", label="est end")
-            ax.set_title("Top-down x–y  (SE3-aligned, metric)")
+            ax.set_title("Top-down x–y  (SE3-aligned, metric)", color="white")
         else:
             raw = np.array([T[:3, 3] for T in stereo_vo.trajectory[1]])
-            ax.plot(raw[:, 0], raw[:, 1], "r-", lw=1.0, label="Stereo VO (raw)")
-            ax.set_title("Top-down x–y  (raw)")
+            ax.plot(raw[:, 0], raw[:, 1], color="#EF9A9A", lw=1.0, label="Stereo VO (raw)")
+            ax.set_title("Top-down x–y  (raw)", color="white")
 
         if ate_errors is not None:
             aligned_ts = collect_gt_timestamps(loader, stereo_vo.trajectory[1], ts)
@@ -611,22 +561,23 @@ def save_stereo_plot(cfg, loader, stereo_vo, stereo_time, out_dir, full_gt: bool
                 aligned_ts = aligned_ts - aligned_ts[0]
             n = min(len(aligned_ts), len(ate_errors))
             if n:
-                ax2.plot(aligned_ts[:n], ate_errors[:n], "r-", lw=0.8, label="Stereo ATE")
-            ax2.set_xlabel("time [s]"); ax2.set_ylabel("ATE [m]")
-            ax2.set_title("ATE over time  (SE3-aligned)")
+                ax2.plot(aligned_ts[:n], ate_errors[:n], color="#EF9A9A", lw=0.8, label="Stereo ATE")
+            ax2.set_xlabel("time [s]", color="white")
+            ax2.set_ylabel("ATE [m]", color="white")
+            ax2.set_title("ATE over time  (SE3-aligned)", color="white")
             ax2.set_ylim(bottom=0)
         else:
             raw = np.array([T[:3, 3] for T in stereo_vo.trajectory[1]])
-            ax2.plot(ts, raw[:, 0], "r-", lw=0.8, label="x")
-            ax2.plot(ts, raw[:, 1], "b-", lw=0.8, label="y")
-            ax2.set_xlabel("time [s]"); ax2.set_ylabel("[m]")
-            ax2.set_title("Raw x-y over time")
+            ax2.plot(ts, raw[:, 0], color="#4FC3F7", lw=0.8, label="x")
+            ax2.plot(ts, raw[:, 1], color="#EF9A9A", lw=0.8, label="y")
+            ax2.set_xlabel("time [s]", color="white")
+            ax2.set_ylabel("[m]", color="white")
+            ax2.set_title("Raw x-y over time", color="white")
 
         plt.suptitle(f"Stereo VO — {cfg.sequence_name}  |  "
                      f"failures={stereo_vo.n_failures}   ATE={ate_val:.3f}m   "
-                     f"scale=1.000 metric   fps={fps:.0f}", fontsize=11)
+                     f"scale=1.000 metric   fps={fps:.0f}", fontsize=11, color="white")
     else:
-        # ── start-aligned drift path (corridor3/outdoors5) ────────────────────
         drift_m = float("nan")
         if len(all_gt_poses) >= 2:
             drift_m = start_end_drift(stereo_vo.trajectory[1],
@@ -636,7 +587,7 @@ def save_stereo_plot(cfg, loader, stereo_vo, stereo_time, out_dir, full_gt: bool
               if all_gt_poses else np.eye(4)
         stereo_sa = np.array([(T_a @ T)[:3, 3] for T in stereo_vo.trajectory[1]])
 
-        ax.plot(stereo_sa[:, 0], stereo_sa[:, 1], "r-", lw=1.0,
+        ax.plot(stereo_sa[:, 0], stereo_sa[:, 1], color="#EF9A9A", lw=1.0,
                 label=f"Stereo VO (start-aligned, drift={drift_m:.2f}m)")
         ax.scatter(stereo_sa[0,  0], stereo_sa[0,  1], c="blue", s=60, zorder=5, marker="o",
                    label="est start")
@@ -648,88 +599,28 @@ def save_stereo_plot(cfg, loader, stereo_vo, stereo_time, out_dir, full_gt: bool
         if len(gt_arr) >= 2:
             ax.scatter(gt_arr[-1, 0], gt_arr[-1, 1], c="gold", s=100, zorder=6, marker="*",
                        label="GT end")
-        ax.set_title("Top-down x–y  (start-aligned to GT)")
+        ax.set_title("Top-down x–y  (start-aligned to GT)", color="white")
 
-        ax2.plot(ts, stereo_sa[:, 0], "r-", lw=0.8, label="x")
-        ax2.plot(ts, stereo_sa[:, 1], "b-", lw=0.8, label="y")
-        ax2.set_xlabel("time [s]"); ax2.set_ylabel("[m]")
-        ax2.set_title("x–y position over time  (start-aligned)")
+        ax2.plot(ts, stereo_sa[:, 0], color="#EF9A9A", lw=0.8, label="x")
+        ax2.plot(ts, stereo_sa[:, 1], color="#4FC3F7", lw=0.8, label="y")
+        ax2.set_xlabel("time [s]", color="white")
+        ax2.set_ylabel("[m]", color="white")
+        ax2.set_title("x–y position over time  (start-aligned)", color="white")
 
         plt.suptitle(f"Stereo VO — {cfg.sequence_name}  |  "
                      f"failures={stereo_vo.n_failures}   "
-                     f"start-end drift={drift_m:.3f}m   fps={fps:.0f}", fontsize=11)
+                     f"start-end drift={drift_m:.3f}m   fps={fps:.0f}",
+                     fontsize=11, color="white")
 
-    ax.set_xlabel("x [m]"); ax.set_ylabel("y [m]")
-    ax.legend(fontsize=8); ax.set_aspect("equal")
-    ax2.legend(fontsize=8)
+    ax.set_xlabel("x [m]", color="white")
+    ax.set_ylabel("y [m]", color="white")
+    ax.legend(fontsize=8, facecolor="#222222", labelcolor="white", loc="upper left")
+    ax.set_aspect("equal")
+    ax2.legend(fontsize=8, facecolor="#222222", labelcolor="white")
     plt.tight_layout()
     path = os.path.join(out_dir, "stereo_traj.png")
-    plt.savefig(path, dpi=120); plt.close()
+    plt.savefig(path, dpi=120, facecolor=fig.get_facecolor()); plt.close()
     print(f"  Saved {path}")
-
-
-def save_drift_comparison_plot(seq, mono_vo, stereo_vo,
-                                mono_drift, stereo_drift,
-                                gt_poses, out_dir):
-    """Save comparison plot for corridor3 / outdoors5 (drift only)."""
-    mono_ts   = np.array(mono_vo.trajectory[0]);   mono_ts   -= mono_ts[0]
-    stereo_ts = np.array(stereo_vo.trajectory[0]); stereo_ts -= stereo_ts[0]
-
-    # Apply start-pose alignment so trajectories are in GT world frame
-    if gt_poses and len(gt_poses) >= 2:
-        T_gt0  = gt_poses[0]
-        T_a_m  = T_gt0 @ np.linalg.inv(mono_vo.trajectory[1][0])
-        T_a_s  = T_gt0 @ np.linalg.inv(stereo_vo.trajectory[1][0])
-        mono_arr   = np.array([(T_a_m @ T)[:3, 3] for T in mono_vo.trajectory[1]])
-        stereo_arr = np.array([(T_a_s @ T)[:3, 3] for T in stereo_vo.trajectory[1]])
-    else:
-        mono_arr   = np.array([T[:3, 3] for T in mono_vo.trajectory[1]])
-        stereo_arr = np.array([T[:3, 3] for T in stereo_vo.trajectory[1]])
-
-    gt_sparse = (np.array([T[:3, 3] for T in gt_poses]) if gt_poses else None)
-
-    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
-
-    ax = axes[0]
-    ax.plot(mono_arr[:, 0],   mono_arr[:, 1],   "b-", lw=0.8, alpha=0.8,
-            label=f"Mono VO  (drift={mono_drift:.2f}m)")
-    ax.scatter(mono_arr[0,  0], mono_arr[0,  1], c="cyan",   s=60, zorder=5,
-               marker="o", label="Mono est start")
-    ax.scatter(mono_arr[-1, 0], mono_arr[-1, 1], c="cyan",   s=60, zorder=5,
-               marker="D", label="Mono est end")
-    ax.plot(stereo_arr[:, 0], stereo_arr[:, 1], "r-", lw=0.8, alpha=0.8,
-            label=f"Stereo VO (drift={stereo_drift:.2f}m)")
-    ax.scatter(stereo_arr[0,  0], stereo_arr[0,  1], c="orange", s=60, zorder=5,
-               marker="o", label="Stereo est start")
-    ax.scatter(stereo_arr[-1, 0], stereo_arr[-1, 1], c="orange", s=60, zorder=5,
-               marker="D", label="Stereo est end")
-    if gt_sparse is not None and len(gt_sparse) >= 1:
-        ax.scatter(gt_sparse[0, 0], gt_sparse[0, 1],
-                   c="lime", s=100, zorder=6, marker="*", label="GT start")
-    if gt_sparse is not None and len(gt_sparse) >= 2:
-        ax.scatter(gt_sparse[-1, 0], gt_sparse[-1, 1],
-                   c="gold", s=100, zorder=6, marker="*", label="GT end")
-    ax.set_xlabel("x [m]"); ax.set_ylabel("y [m]")
-    ax.set_title("Top-down  x–y  (start-aligned to GT)")
-    ax.legend(fontsize=8)
-
-    ax2 = axes[1]
-    ax2.plot(mono_ts,   mono_arr[:, 1],   "b-", lw=0.8, label="Mono y")
-    ax2.plot(stereo_ts, stereo_arr[:, 1], "r-", lw=0.8, label="Stereo y")
-    ax2.set_xlabel("time [s]"); ax2.set_ylabel("y [m]")
-    ax2.set_title("Y position over time  (start-aligned)")
-    ax2.legend(fontsize=8)
-
-    plt.suptitle(
-        f"Mono vs Stereo VO — {seq}  |  "
-        f"mono drift={mono_drift:.2f}m  stereo drift={stereo_drift:.2f}m",
-        fontsize=11,
-    )
-    plt.tight_layout()
-    path = os.path.join(out_dir, "comparison.png")
-    plt.savefig(path, dpi=120); plt.close()
-    print(f"  Saved {path}")
-
 
 
 def save_stereo_sample_visuals(loader, stereo_cfg, out_dir, n_samples: int = 3) -> None:
@@ -1045,7 +936,8 @@ _CSV_FIELDS = [
     "sequence", "method", "metric_type",
     "ATE_RMSE_m", "ATE_mean_m",
     "RPE_trans_d1_m", "RPE_rot_d1_deg",
-    "RPE_trans_100m_m", "RPE_rot_100m_deg", "RPE_100m_segments",
+    "RPE_trans_100m_m", "RPE_100m_segments",
+    "RPE_rot_60deg_deg", "RPE_60deg_segments",
     "est_traj_len_m", "gt_traj_len_m", "scale", "drift_m",
     "local_ate_start_m", "local_ate_end_m",
     "failures", "success_rate_pct", "runtime_fps",
@@ -1070,8 +962,9 @@ def save_results_csv(results: dict, path: str) -> None:
                 "RPE_trans_d1_m":      _fmt(r["mono_rpe"]),
                 "RPE_rot_d1_deg":      _fmt(r["mono_rpe_rot"]),
                 "RPE_trans_100m_m":    _fmt(r["mono_rpe_100m"]),
-                "RPE_rot_100m_deg":    _fmt(r["mono_rpe_rot_100m"]),
                 "RPE_100m_segments":   r["mono_rpe_segs_100m"],
+                "RPE_rot_60deg_deg":   _fmt(r.get("mono_rpe_rot_60deg")),
+                "RPE_60deg_segments":  r.get("mono_rpe_segs_60deg", ""),
                 "est_traj_len_m":      _fmt(r["mono_traj_len"], 2),
                 "gt_traj_len_m":       _fmt(r.get("gt_traj_len"), 2),
                 "scale":               _fmt(r["mono_scale"]),
@@ -1091,8 +984,9 @@ def save_results_csv(results: dict, path: str) -> None:
                 "RPE_trans_d1_m":      _fmt(r["stereo_rpe"]),
                 "RPE_rot_d1_deg":      _fmt(r["stereo_rpe_rot"]),
                 "RPE_trans_100m_m":    _fmt(r["stereo_rpe_100m"]),
-                "RPE_rot_100m_deg":    _fmt(r["stereo_rpe_rot_100m"]),
                 "RPE_100m_segments":   r["stereo_rpe_segs_100m"],
+                "RPE_rot_60deg_deg":   _fmt(r.get("stereo_rpe_rot_60deg")),
+                "RPE_60deg_segments":  r.get("stereo_rpe_segs_60deg", ""),
                 "est_traj_len_m":      _fmt(r["stereo_traj_len"], 2),
                 "gt_traj_len_m":       _fmt(r.get("gt_traj_len"), 2),
                 "scale":               _fmt(r["stereo_scale"]),
@@ -1113,8 +1007,9 @@ def save_results_csv(results: dict, path: str) -> None:
                 "RPE_trans_d1_m":      _fmt(r.get("mono_rpe")),
                 "RPE_rot_d1_deg":      _fmt(r.get("mono_rpe_rot")),
                 "RPE_trans_100m_m":    "",
-                "RPE_rot_100m_deg":    "",
                 "RPE_100m_segments":   "",
+                "RPE_rot_60deg_deg":   "",
+                "RPE_60deg_segments":  "",
                 "est_traj_len_m":      _fmt(r.get("mono_traj_len"), 2),
                 "gt_traj_len_m":       "",
                 "scale":               "",
@@ -1134,8 +1029,9 @@ def save_results_csv(results: dict, path: str) -> None:
                 "RPE_trans_d1_m":      _fmt(r.get("stereo_rpe")),
                 "RPE_rot_d1_deg":      _fmt(r.get("stereo_rpe_rot")),
                 "RPE_trans_100m_m":    "",
-                "RPE_rot_100m_deg":    "",
                 "RPE_100m_segments":   "",
+                "RPE_rot_60deg_deg":   "",
+                "RPE_60deg_segments":  "",
                 "est_traj_len_m":      _fmt(r.get("stereo_traj_len"), 2),
                 "gt_traj_len_m":       "",
                 "scale":               "",
@@ -1228,6 +1124,12 @@ for config_file in SEQUENCES:
             poses_3d_m = mono_vo.trajectory[1]
             poses_3d_s = stereo_vo.trajectory[1]
         align_m = align_s = ""   # already start-aligned; skip SE3/Sim3 fit
+        _pre_drift_m = start_end_drift(mono_vo.trajectory[1],
+                                       [_gt_nonnull[0], _gt_nonnull[-1]]) \
+                       if len(_gt_nonnull) >= 2 else float("nan")
+        _pre_drift_s = start_end_drift(stereo_vo.trajectory[1],
+                                       [_gt_nonnull[0], _gt_nonnull[-1]]) \
+                       if len(_gt_nonnull) >= 2 else float("nan")
 
     save_3d_trajectory(
         est_poses = poses_3d_m,
@@ -1247,10 +1149,12 @@ for config_file in SEQUENCES:
     save_comparison_3d(
         mono_poses   = poses_3d_m,
         stereo_poses = poses_3d_s,
-        gt_poses     = gt_list,      # pass all GT; full_gt controls how it's used
+        gt_poses     = gt_list,
         seq_name     = seq,
         out_path     = os.path.join(out_dir, "comparison_3d.png"),
         full_gt      = _full_gt,
+        mono_drift   = _pre_drift_m if not _full_gt else float("nan"),
+        stereo_drift = _pre_drift_s if not _full_gt else float("nan"),
     )
 
     mono_est,   mono_gt   = collect_gt(loader, mono_vo.trajectory[1])
@@ -1277,10 +1181,8 @@ for config_file in SEQUENCES:
         for label, mk, sk in [
             ("ATE RMSE [m]",         "ate_rmse",          "ate_rmse"),
             ("ATE mean [m]",         "ate_mean",          "ate_mean"),
-            ("RPE trans d=1 [m]",    "rpe_trans_rmse_d1", "rpe_trans_rmse_d1"),
-            ("RPE rot d=1 [deg]",    "rpe_rot_rmse_d1",   "rpe_rot_rmse_d1"),
             ("RPE trans 100m [m]",   "rpe_trans_100m",    "rpe_trans_100m"),
-            ("RPE rot 100m [deg]",   "rpe_rot_100m",      "rpe_rot_100m"),
+            ("RPE rot 60deg [deg]",  "rpe_rot_60deg",     "rpe_rot_60deg"),
             ("Sim3/SE3 scale",       "scale",             "scale"),
         ]:
             mv = mono_result[mk]
@@ -1293,6 +1195,9 @@ for config_file in SEQUENCES:
         segs_m = mono_result["rpe_n_segments_100m"]
         segs_s = stereo_result["rpe_n_segments_100m"]
         print(f"{'  (100m segments)':>32} {segs_m:>12d} {segs_s:>12d}")
+        segs60_m = mono_result["rpe_n_segments_60deg"]
+        segs60_s = stereo_result["rpe_n_segments_60deg"]
+        print(f"{'  (60deg segments)':>32} {segs60_m:>12d} {segs60_s:>12d}")
         print(f"{'Tracking failures':<32} "
               f"{mono_vo.n_failures:>12d} "
               f"{stereo_vo.n_failures:>12d}")
@@ -1303,9 +1208,6 @@ for config_file in SEQUENCES:
               f"{len(loader) / mono_time:>12.1f} "
               f"{len(loader) / stereo_time:>12.1f}")
 
-        save_plot(cfg, loader, mono_vo, stereo_vo,
-                  mono_result, stereo_result, out_dir)
-
         all_results[seq] = {
             "type":                  "ate",
             "mono_ate":              mono_result["ate_rmse"],
@@ -1313,8 +1215,9 @@ for config_file in SEQUENCES:
             "mono_rpe":              mono_result["rpe_trans_rmse_d1"],
             "mono_rpe_rot":          mono_result["rpe_rot_rmse_d1"],
             "mono_rpe_100m":         mono_result["rpe_trans_100m"],
-            "mono_rpe_rot_100m":     mono_result["rpe_rot_100m"],
             "mono_rpe_segs_100m":    mono_result["rpe_n_segments_100m"],
+            "mono_rpe_rot_60deg":    mono_result["rpe_rot_60deg"],
+            "mono_rpe_segs_60deg":   mono_result["rpe_n_segments_60deg"],
             "mono_traj_len":         mono_traj_len_est,
             "mono_scale":            mono_result["scale"],
             "stereo_ate":            stereo_result["ate_rmse"],
@@ -1322,8 +1225,9 @@ for config_file in SEQUENCES:
             "stereo_rpe":            stereo_result["rpe_trans_rmse_d1"],
             "stereo_rpe_rot":        stereo_result["rpe_rot_rmse_d1"],
             "stereo_rpe_100m":       stereo_result["rpe_trans_100m"],
-            "stereo_rpe_rot_100m":   stereo_result["rpe_rot_100m"],
             "stereo_rpe_segs_100m":  stereo_result["rpe_n_segments_100m"],
+            "stereo_rpe_rot_60deg":  stereo_result["rpe_rot_60deg"],
+            "stereo_rpe_segs_60deg": stereo_result["rpe_n_segments_60deg"],
             "stereo_traj_len":       stereo_traj_len_est,
             "stereo_scale":          stereo_result["scale"],
             "gt_traj_len":           gt_traj_len,
@@ -1395,10 +1299,6 @@ for config_file in SEQUENCES:
               f"{len(loader) / mono_time:>12.1f} "
               f"{len(loader) / stereo_time:>12.1f}")
 
-        save_drift_comparison_plot(
-            seq, mono_vo, stereo_vo,
-            mono_drift, stereo_drift, gt_poses, out_dir)
-
         all_results[seq] = {
             "mono_drift":            mono_drift,
             "stereo_drift":          stereo_drift,
@@ -1439,12 +1339,12 @@ for seq, r in all_results.items():
     if r["type"] == "ate":
         print(f"{seq:<14} {'ATE RMSE [m]':<28} "
               f"{_pf(r['mono_ate'])} {_pf(r['stereo_ate'])}")
-        print(f"{'':<14} {'RPE trans d=1 [m]':<28} "
-              f"{_pf(r['mono_rpe'])} {_pf(r['stereo_rpe'])}")
         print(f"{'':<14} {'RPE trans 100m [m]':<28} "
               f"{_pf(r['mono_rpe_100m'])} {_pf(r['stereo_rpe_100m'])}")
-        print(f"{'':<14} {'  (segments)':<28} "
+        print(f"{'':<14} {'  (100m segments)':<28} "
               f"{r['mono_rpe_segs_100m']:>10d} {r['stereo_rpe_segs_100m']:>10d}")
+        print(f"{'':<14} {'RPE rot 60deg [deg]':<28} "
+              f"{_pf(r['mono_rpe_rot_60deg'])} {_pf(r['stereo_rpe_rot_60deg'])}")
         print(f"{'':<14} {'Est. traj length [m]':<28} "
               f"{_pf1(r['mono_traj_len'])} {_pf1(r['stereo_traj_len'])}")
         gt_len = r.get('gt_traj_len', float('nan'))

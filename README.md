@@ -89,35 +89,54 @@ flowchart LR
 
 ## Key Results
 
-| Sequence | Method | Metric | Value | Winner |
-|---|---|---|---|---|
-| room2 | Mono VO | ATE RMSE (Sim3) | 1.210 m | |
-| room2 | **Stereo VO** | **ATE RMSE (SE3)** | **0.785 m** | ✓ Stereo |
-| room2 | Mono VO | Scale (Sim3) | 0.076 (×13 error) | |
-| room2 | Stereo VO | Scale (SE3) | **1.000** (metric ✓) | |
-| room2 | Mono VO | RPE trans d=1 | 0.105 m/frame | |
-| room2 | Stereo VO | RPE trans d=1 | 0.178 m/frame | |
-| room2 | Stereo VO | RPE trans 100m | 3.849 m / 868 segments | |
-| corridor3 | Mono VO | Start-end drift | 13.830 m | |
-| corridor3 | **Stereo VO** | **Start-end drift** | **6.472 m** | ✓ Stereo |
-| corridor3 | Stereo VO | RPE trans d=1 ¹ | 0.068 m/frame | |
-| corridor3 | Stereo VO | Local ATE start block | 0.110 m (n=512) | |
-| corridor3 | Stereo VO | Local ATE end block | 0.232 m (n=680) | |
-| outdoors5 | **Mono VO** | **Start-end drift** | **15.736 m** | ✓ Mono ² |
-| outdoors5 | Stereo VO | Start-end drift | 70.281 m | |
-| outdoors5 | Stereo VO | RPE trans d=1 ¹ | 0.087 m/frame | |
-| outdoors5 | Stereo VO | Local ATE start block | 0.165 m (n=1182) | |
-| outdoors5 | Stereo VO | Local ATE end block | 1.195 m (n=1560) | |
+### room2
+
+| Metric | Mono VO | Stereo VO | Winner |
+|---|---|---|---|
+| ATE RMSE (Sim3 / SE3) | 1.202 m | **0.439 m** | ✓ Stereo |
+| Scale | 0.201 (×5 error) | 1.000 (metric) | |
+| RPE trans 100m (d=100m) | N/A (83.8 m < 100 m) | 3.553 m / 885 seg | |
+| RPE rot 60° (θ=60°) | 81.813° / 2551 seg | 89.081° / 2559 seg | |
+| Est. traj length | 83.8 m | 143.3 m (GT: 140.9 m) | |
+| Tracking failures | 3 / 2882 frames | 3 / 2882 frames | |
+| Success rate | 99.9% | 99.9% | |
+| Runtime | 114.7 fps | 37.7 fps | |
+
+### corridor3
+
+| Metric | Mono VO | Stereo VO | Winner |
+|---|---|---|---|
+| Start-end drift | 13.560 m | **6.472 m** | ✓ Stereo |
+| RPE trans d=1 ¹ | N/A | 0.068 m/frame | |
+| Local ATE start block | 0.477 m (n=512) | 0.110 m (n=512) | |
+| Local ATE end block | 0.782 m (n=680) | 0.232 m (n=680) | |
+| Est. traj length | 212.2 m | 299.5 m | GT: N/A (partial) |
+| Tracking failures | 12 / 5802 frames | 15 / 5802 frames | |
+| Success rate | 99.79% | 99.74% | |
+| Runtime | 112.1 fps | 47.5 fps | |
+
+### outdoors5
+
+| Metric | Mono VO | Stereo VO | Winner |
+|---|---|---|---|
+| Start-end drift | **15.736 m** | 70.281 m | ✓ Mono ² |
+| RPE trans d=1 ¹ | N/A | 0.087 m/frame | |
+| Local ATE start block | 0.690 m (n=1182) | 0.165 m (n=1182) | |
+| Local ATE end block | 0.832 m (n=1560) | 1.195 m (n=1560) | |
+| Est. traj length | 633.7 m | 920.7 m | GT: N/A (partial) |
+| Tracking failures | 10 / 17747 frames | 15 / 17747 frames | |
+| Success rate | 99.94% | 99.92% | |
+| Runtime | 102.4 fps | 42.0 fps | |
 
 ¹ Computed only on consecutive GT-covered frames (start and end blocks separately).
 Mono RPE omitted for drift sequences — arbitrary scale makes it uninformative.
 
 ² Outdoors5 mono wins the drift metric but severely underscales the trajectory (estimated path
-~20 m for a ~1 km walk). Stereo has correct metric scale but accumulates heading drift from
-noisy disparity at outdoor distances (fB/d noise at 15 m ≈ 6 m/px). See Analysis section.
+~633 m for a ~887 s outdoor walk at scale=0.201). Stereo has correct metric scale but accumulates
+heading drift from noisy disparity at outdoor distances (fB/d noise at 15 m ≈ 6 m/px). See Analysis section.
 
-Mono VO runs at **96–121 fps** (~5–6× real-time at 20 Hz).
-Stereo VO runs at **34–44 fps** (~1.7–2.2× real-time).
+Mono VO runs at **102–115 fps** (~5–6× real-time at 20 Hz).
+Stereo VO runs at **38–48 fps** (~1.9–2.4× real-time).
 
 ---
 
@@ -125,25 +144,45 @@ Stereo VO runs at **34–44 fps** (~1.7–2.2× real-time).
 
 #### room2
 
-| Mono VO | Stereo VO | Comparison |
-|---|---|---|
-| ![mono](outputs/room2/mono_traj.png) | ![stereo](outputs/room2/stereo_traj.png) | ![comparison](outputs/room2/comparison.png) |
+| Mono VO | Stereo VO |
+|---|---|
+| ![mono](outputs/room2/mono_traj.png) | ![stereo](outputs/room2/stereo_traj.png) |
 
-| 3D Comparison |
+| Mono VO 3D | Stereo VO 3D |
+|---|---|
+| ![mono3d](outputs/room2/mono_traj_3d.png) | ![stereo3d](outputs/room2/stereo_traj_3d.png) |
+
+| 3D Comparison (Mono vs Stereo vs GT) |
 |---|
 | ![3d](outputs/room2/comparison_3d.png) |
 
 #### corridor3
 
-| Mono VO | Stereo VO | Comparison (start-aligned) |
-|---|---|---|
-| ![mono](outputs/corridor3/mono_traj.png) | ![stereo](outputs/corridor3/stereo_traj.png) | ![comparison](outputs/corridor3/comparison.png) |
+| Mono VO | Stereo VO |
+|---|---|
+| ![mono](outputs/corridor3/mono_traj.png) | ![stereo](outputs/corridor3/stereo_traj.png) |
+
+| Mono VO 3D | Stereo VO 3D |
+|---|---|
+| ![mono3d](outputs/corridor3/mono_traj_3d.png) | ![stereo3d](outputs/corridor3/stereo_traj_3d.png) |
+
+| 3D Comparison (Mono vs Stereo, start-aligned) |
+|---|
+| ![3d](outputs/corridor3/comparison_3d.png) |
 
 #### outdoors5
 
-| Mono VO | Stereo VO | Comparison (start-aligned) |
-|---|---|---|
-| ![mono](outputs/outdoors5/mono_traj.png) | ![stereo](outputs/outdoors5/stereo_traj.png) | ![comparison](outputs/outdoors5/comparison.png) |
+| Mono VO | Stereo VO |
+|---|---|
+| ![mono](outputs/outdoors5/mono_traj.png) | ![stereo](outputs/outdoors5/stereo_traj.png) |
+
+| Mono VO 3D | Stereo VO 3D |
+|---|---|
+| ![mono3d](outputs/outdoors5/mono_traj_3d.png) | ![stereo3d](outputs/outdoors5/stereo_traj_3d.png) |
+
+| 3D Comparison (Mono vs Stereo, start-aligned) |
+|---|
+| ![3d](outputs/outdoors5/comparison_3d.png) |
 
 ---
 
@@ -151,17 +190,55 @@ Stereo VO runs at **34–44 fps** (~1.7–2.2× real-time).
 
 For each sequence the stereo pipeline saves:
 
-**Disparity and depth sample maps** (`disparity_sample_N.png`, `depth_sample_N.png`) — colour heat maps for 3 frames (10%, 50%, 90% of sequence). Measured disparity and depth ranges are annotated on each image.
+**Rectified stereo pairs** (`rectified_pair_N.png`) — left/right frames after fisheye undistortion and stereo rectification, for 3 sample timestamps. Epipolar lines are horizontal after rectification.
 
-**Metric 3D point cloud** (`pointcloud.ply`, binary little-endian PLY) — accumulated from up to 800 keyframes selected by a motion threshold (Δt ≥ 5 cm or Δθ ≥ 2°). Points are sampled at an auto-scaled pixel step so raw counts stay ≤ 4M, filtered by minimum disparity, then cleaned by Statistical Outlier Removal (k=10 neighbours, threshold = μ + 2σ). Final clouds: ~1M points, 15 MB.
+**Disparity maps** (`disparity_map_N.png`) — SGBM+WLS disparity heat maps (jet colormap) for 3 frames (10%, 50%, 90% of sequence). Measured disparity and depth ranges are annotated on each image.
+
+**Depth maps** (`depth_map_N.png`) — metric depth heat maps (Z = fB/d) for the same 3 frames.
+
+**Metric 3D point cloud** (`pointcloud.ply`, binary little-endian PLY) — accumulated from up to 800 keyframes selected by a motion threshold (Δt ≥ 5 cm or Δθ ≥ 2°). Points are sampled at an auto-scaled pixel step so raw counts stay ≤ 4M, filtered by minimum disparity, then cleaned by Statistical Outlier Removal. room2 uses k=20, σ=1.0 (tighter, to remove CLAHE-induced SGBM wall speckle); corridor3 and outdoors5 use k=10, σ=2.0. Final clouds: ~1M points, 15 MB.
 
 | Sequence | Raw pts | After SOR | Removed | SOR threshold |
 |---|---|---|---|---|
-| room2    | 2,564,263 | 2,487,935 | 3.1% | 0.076 m |
+| room2    | 2,562,160 | 2,346,604 | 8.4% | 0.067 m |
 | corridor3 | 2,219,598 | 2,182,964 | 1.7% | 0.242 m |
 | outdoors5 | 1,768,976 | 1,703,928 | 3.8% | 0.708 m |
 
 Open PLY in MeshLab: **File → Import Mesh → pointcloud.ply**
+
+### room2
+
+| Rectified Pair (frame 288) | Disparity Map (frame 288) | Depth Map (frame 288) | 3D Point Cloud (frame 288) |
+|---|---|---|---|
+| ![rect](outputs/room2/rectified_pair_1.png) | ![disp](outputs/room2/disparity_map_1.png) | ![depth](outputs/room2/depth_map_1.png) | ![pc](outputs/room2/pointcloud_1.png) |
+
+| Full Point Cloud (depth-coloured) | Full Point Cloud (RGB) |
+|---|---|
+| ![pcf](outputs/room2/pointcloud_full.png) | ![pcfrgb](outputs/room2/pointcloud_full_rgb.png) |
+
+---
+
+### corridor3
+
+| Rectified Pair (frame 580) | Disparity Map (frame 580) | Depth Map (frame 580) | 3D Point Cloud (frame 580) |
+|---|---|---|---|
+| ![rect](outputs/corridor3/rectified_pair_1.png) | ![disp](outputs/corridor3/disparity_map_1.png) | ![depth](outputs/corridor3/depth_map_1.png) | ![pc](outputs/corridor3/pointcloud_1.png) |
+
+| Full Point Cloud (depth-coloured) | Full Point Cloud (RGB) |
+|---|---|
+| ![pcf](outputs/corridor3/pointcloud_full.png) | ![pcfrgb](outputs/corridor3/pointcloud_full_rgb.png) |
+
+---
+
+### outdoors5
+
+| Rectified Pair (frame 1774) | Disparity Map (frame 1774) | Depth Map (frame 1774) | 3D Point Cloud (frame 1774) |
+|---|---|---|---|
+| ![rect](outputs/outdoors5/rectified_pair_1.png) | ![disp](outputs/outdoors5/disparity_map_1.png) | ![depth](outputs/outdoors5/depth_map_1.png) | ![pc](outputs/outdoors5/pointcloud_1.png) |
+
+| Full Point Cloud (depth-coloured) | Full Point Cloud (RGB) |
+|---|---|
+| ![pcf](outputs/outdoors5/pointcloud_full.png) | ![pcfrgb](outputs/outdoors5/pointcloud_full_rgb.png) |
 
 ---
 
@@ -195,9 +272,12 @@ Stereo_VO/
 │   ├── room2/
 │   │   ├── mono_traj.txt           # TUM format trajectory
 │   │   ├── stereo_traj.txt
-│   │   ├── mono_traj.png / stereo_traj.png / comparison.png / comparison_3d.png
-│   │   ├── disparity_sample_*.png  # colour disparity heat maps (3 sample frames)
-│   │   ├── depth_sample_*.png      # colour depth heat maps (3 sample frames)
+│   │   ├── mono_traj.png / stereo_traj.png
+│   │   ├── mono_traj_3d.png / stereo_traj_3d.png / comparison_3d.png
+│   │   ├── rectified_pair_*.png    # rectified stereo pairs (3 sample frames)
+│   │   ├── disparity_map_*.png     # SGBM+WLS disparity heat maps (3 sample frames)
+│   │   ├── depth_map_*.png         # metric depth heat maps (3 sample frames)
+│   │   ├── pointcloud_*.png        # point cloud renders (3 views + full + RGB)
 │   │   └── pointcloud.ply          # metric 3D point cloud ~1M pts (15 MB, binary PLY)
 │   ├── corridor3/  (same structure)
 │   ├── outdoors5/  (same structure)
@@ -323,9 +403,9 @@ NumPy seed  : np.random.seed(42)
 ```
 
 Runtime per sequence (measured, Python 3.13, OpenCV 4.13, no GPU):
-- room2:     mono ~24s  (120.7 fps),  stereo ~85s   (33.8 fps)
-- corridor3: mono ~56s  (104.5 fps),  stereo ~132s  (44.0 fps)
-- outdoors5: mono ~185s  (96.2 fps),  stereo ~470s  (37.8 fps)
+- room2:     mono ~25s  (114.7 fps),  stereo ~76s   (37.7 fps)
+- corridor3: mono ~52s  (112.1 fps),  stereo ~122s  (47.5 fps)
+- outdoors5: mono ~173s (102.4 fps),  stereo ~423s  (42.0 fps)
 
 ---
 
@@ -411,20 +491,25 @@ Reference: R. Mur-Artal and J. D. Tardós, "ORB-SLAM2," IEEE T-RO, 2017.
 ## Analysis and Findings
 
 ### room2 — Stereo advantage: metric scale in small environments
-Stereo achieves **35% lower ATE** (0.785 m vs 1.210 m). The mono scale collapses to 0.076 because
-the camera sweeps within 0.15–2 m of walls, making the virtual-depth initialisation unreliable.
-Stereo's metric depth from disparity anchors the map correctly and maintains scale=1.000 throughout.
+Stereo achieves **64% lower ATE** (0.439 m vs 1.202 m). The mono scale collapses to 0.201 (~5×
+underscaled) because the camera sweeps within 0.15–2 m of walls, making the virtual-depth
+initialisation unreliable. Stereo's metric depth from disparity anchors the map correctly and
+maintains scale=1.000 throughout. CLAHE is enabled for both pipelines on room2: the structured
+indoor scene benefits from adaptive contrast, reducing stereo failures from 18→3 and ATE from
+0.785→0.439 m.
 
 ### corridor3 — Stereo advantage: heading accuracy over long hallways
-Stereo drift is **2.1× lower** (6.47 m vs 13.83 m). The corridor's long straight path amplifies any
+Stereo drift is **2.1× lower** (6.47 m vs 13.56 m). The corridor's long straight path amplifies any
 heading error: mono accumulates scale-and-heading drift over 290 s, while stereo's metric 3D map
 keeps the heading constrained through PnP. CLAHE and a large block size (21 px) stabilise the
 SGBM disparity on homogeneous wall textures.
 
 ### outdoors5 — Known limitation: short baseline at outdoor distances
 Mono wins the drift metric (15.7 m vs 70.3 m), but for a fundamentally different reason: mono
-severely **underscales** the trajectory (estimated path ≈ 20 m for a 887 s outdoor walk). The
-start-end drift appears small only because the scale error compresses the whole path.
+lacks metric scale (estimated path 633.7 m in virtual-depth units vs stereo's 920.7 m metric estimate).
+The start-end drift appears small because the scale error compresses the whole path — a 15.7 m
+error on a non-metric 633.7 m path cannot be directly compared to stereo's 70.3 m error on a
+metric 920.7 m path.
 
 Stereo correctly estimates metric distances but accumulates **heading drift** from noisy disparity
 at outdoor feature depths of 5–20 m. With fB = 18.92 px·m, a feature at 15 m has only ≈1.3 px
@@ -437,24 +522,24 @@ not an implementation deficiency. Systems with longer baselines, IMU fusion, or 
 ### Tracking robustness
 | Sequence | Mono failures | Stereo failures | Stereo reinits |
 |---|---|---|---|
-| room2 | 36 (LK=35, vel=1) | 18 | 18 |
-| corridor3 | 12 (LK=11, vel=1) | 15 | 15 |
+| room2 | 3 | 3 | 3 |
+| corridor3 | 12 | 15 | 15 |
 | outdoors5 | **10** | 15 | 15 |
 
-Stereo `n_reinits` counts failure-recovery events only (PnP failure, insufficient tracked points, velocity spike) — equals `n_failures` because every failure triggers immediate SGBM-based map replenishment. Mono E-reinit events: room2=1, corridor3=0, outdoors5=0.
+Stereo `n_reinits` counts failure-recovery events only (PnP failure, insufficient tracked points, velocity spike) — equals `n_failures` because every failure triggers immediate SGBM-based map replenishment. Mono VD-reinit events: corridor3=1; others=0. Mono E-reinit events: all sequences=0.
 
 ### Illumination sensitivity (CLAHE ablation)
 
-CLAHE (clip limit 2.0, tile 8×8) is applied selectively per sequence. Ablation: toggling CLAHE for both mono and stereo on all sequences:
+CLAHE (clip limit 2.0, tile 8×8) is applied selectively per sequence. Production rule: ON for both pipelines on room2 and corridor3 (indoor structured scenes), ON for mono only on outdoors5, OFF for stereo on outdoors5 (sky/foliage corrupt SGBM). Ablation: toggling CLAHE opposite to production setting:
 
 | Sequence | Pipeline | CLAHE | Failures | ATE / Drift |
 |---|---|---|---|---|
-| room2 | Mono | OFF (prod) | 36 | 1.210 m ATE |
-| room2 | Mono | ON  (abl)  | 12 | 1.215 m ATE |
-| room2 | Stereo | OFF (prod) | 18 | 0.785 m ATE |
-| room2 | Stereo | ON  (abl)  |  3 | 0.439 m ATE |
-| corridor3 | Mono | ON (prod) | 12 | 13.83 m drift |
-| corridor3 | Mono | OFF (abl) | 66 | 22.97 m drift |
+| room2 | Mono | ON (prod) | 3 | 1.202 m ATE |
+| room2 | Mono | OFF (abl) | 39 | 1.192 m ATE |
+| room2 | Stereo | ON (prod) | 3 | **0.439 m ATE** |
+| room2 | Stereo | OFF (abl) | 18 | 0.785 m ATE |
+| corridor3 | Mono | ON (prod) | 12 | 13.56 m drift |
+| corridor3 | Mono | OFF (abl) | 96 | 20.07 m drift |
 | corridor3 | Stereo | ON (prod) | 15 | 6.47 m drift |
 | corridor3 | Stereo | OFF (abl) | 99 | 19.63 m drift |
 | outdoors5 | Mono | ON (prod) | 10 | 15.74 m drift |
@@ -463,9 +548,9 @@ CLAHE (clip limit 2.0, tile 8×8) is applied selectively per sequence. Ablation:
 | outdoors5 | Stereo | ON  (abl) | 11 | **178.19 m drift** |
 
 Key findings:
-- **Corridor3**: CLAHE is essential — disabling it raises stereo failures 15→99 (+84) and drift from 6.47→19.63 m (+13.2 m). Homogeneous walls have too little texture without adaptive contrast enhancement.
+- **Room2**: CLAHE ON for both pipelines — structured indoor scene benefits from adaptive contrast. Disabling stereo CLAHE raises failures 3→18 (+15) and ATE 0.439→0.785 m (+0.346 m).
+- **Corridor3**: CLAHE is essential — disabling it raises mono failures 12→96 (+84, +6.5 m drift) and stereo failures 15→99 (+84, +13.2 m drift). Homogeneous walls have too little texture without adaptive contrast enhancement.
 - **Outdoors5 stereo**: CLAHE is harmful — enabling it increases drift 70.28→178.19 m (+107.9 m). CLAHE over-enhances sky/foliage gradients, corrupting SGBM disparity on outdoor scenes.
-- **Room2 stereo**: CLAHE not needed in production (short range, good texture) but ablation shows it would improve ATE 0.785→0.439 m if enabled.
 
 ---
 

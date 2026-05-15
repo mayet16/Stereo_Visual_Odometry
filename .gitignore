@@ -15,7 +15,6 @@ venv/
 .DS_Store
 
 # Build/output
-outputs/
 build/
 dist/
 
