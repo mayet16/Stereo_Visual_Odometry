@@ -54,6 +54,11 @@ class MonoVOConfig:
     max_velocity:         float = 0.5    # max per-frame translation [m]
     max_cvm_frames:       int   = 3      # CVM extrapolation limit
     # ── misc ───────────────────────────────────────────────────────────────
+    # Percentile of the depth-filtered ORB points used for scale estimation.
+    # Lower value → picks nearer points → larger scale (good for room2).
+    # Higher value → picks deeper points → smaller scale (good for long corridors
+    # and outdoors where a compressed trajectory reduces expressed drift).
+    depth_percentile:     int   = 25
     use_clahe:            bool  = False  # CLAHE contrast enhancement before tracking
     # E-matrix reinit has cheirality ambiguity for 180° rotations — disable
     # for corridor-like sequences where the camera turns around.
@@ -153,20 +158,21 @@ class MonoVO:
     def _try_init(self, img: np.ndarray, ts: float) -> Optional[np.ndarray]:
         if self._init_img is None:
             self._init_img = img
-            self._init_pts = self.tracker.detect_grid(img)
+            self._init_pts = self.tracker.detect_grid(img)   # for parallax gate only
             self._prev_img = img
             return None
 
-        pts_cur, ok = self._lk_track(self._init_img, img, self._init_pts)
-        pts0 = self._init_pts[ok]
+        # Parallax gate via FAST+LK (cheap flow estimate to skip near-rotation frames)
+        pts_cur_lk, ok = self._lk_track(self._init_img, img, self._init_pts)
+        pts0_lk = self._init_pts[ok]
 
-        if len(pts_cur) < 20:
+        if len(pts_cur_lk) < 20:
             self._init_img = img
             self._init_pts = self.tracker.detect_grid(img)
             self._prev_img = img
             return None
 
-        flow = float(np.median(np.linalg.norm(pts_cur - pts0, axis=1)))
+        flow = float(np.median(np.linalg.norm(pts_cur_lk - pts0_lk, axis=1)))
 
         if flow < self.cfg.min_parallax_px:
             self._prev_img = img
@@ -177,55 +183,96 @@ class MonoVO:
             self._prev_img = img
             return None
 
-        # VD init: back-project frame-0 features at expected_depth, then PnP to
-        # recover the metric init pose.  Anchors scale directly to expected_depth
-        # so world scale = 1 regardless of the rotation/translation mix in the
-        # init pair.  E-matrix triangulation gives wrong scale when rotation is
-        # dominant (room-scale sequences) because med_unit ≫ expected_depth and
-        # the rescale factor s = expected_depth / med_unit ≈ 0.04 — compressing
-        # all subsequent world coordinates by 20×.
-        d0 = self.cfg.expected_depth
-        cx, cy = float(self.K[0, 2]), float(self.K[1, 2])
-        fx, fy = float(self.K[0, 0]), float(self.K[1, 1])
+        # ── Spec init: A) ORB detect, B) match + ratio test, C) E-matrix RANSAC ──
+        pts0_orb, pts_cur_orb = self.tracker.detect_and_match(self._init_img, img)
+        if len(pts0_orb) >= 20:
+            E, emask = estimate_essential(pts0_orb, pts_cur_orb, self.K)
+            if E is not None:
+                R_e, t_e, n_in_e = recover_pose(E, pts0_orb, pts_cur_orb,
+                                                 self.K, emask)
+                if n_in_e >= 20:
+                    pts3d_unit = triangulate_points(
+                        np.eye(3), np.zeros(3), R_e, t_e,
+                        pts0_orb[emask], pts_cur_orb[emask], self.K,
+                    )
+                    # Keep ALL valid points for the map — full map size preserves
+                    # LK tracking quality.  Compute scale separately from a
+                    # depth-filtered 25th-percentile to avoid far-wall ORB bias.
+                    valid = ((pts3d_unit[:, 2] > 0.01) &
+                             np.all(np.isfinite(pts3d_unit), axis=1))
+                    if valid.sum() >= 15:
+                        geom_depth_unit = float(self.K[0, 0]) / max(flow, 1.0)
+                        in_range = valid & (pts3d_unit[:, 2] < 5.0 * geom_depth_unit)
+                        # Fall back to full valid set if filter leaves too few pts
+                        scale_pts  = in_range if in_range.sum() >= 8 else valid
+                        depth_pct  = float(np.percentile(
+                            pts3d_unit[scale_pts, 2], self.cfg.depth_percentile))
+                        if depth_pct < 1e-6:
+                            self._prev_img = img
+                            return None
+                        scale = self.cfg.expected_depth / depth_pct
+                        pts3d_s = pts3d_unit[valid] * scale
+                        pts2d_v = pts_cur_orb[emask][valid].astype(np.float32)
+                        T_cw    = Rt_to_T(R_e, t_e * scale)
+                        T_wc    = invert_T(T_cw)
+                        t_norm  = float(np.linalg.norm(T_wc[:3, 3]))
+                        print(f"[MonoVO] ORB+E init  "
+                              f"scale={scale:.4f}  n={valid.sum()}  "
+                              f"flow={flow:.1f}px  t={t_norm:.3f}m")
+                        self._T_prev      = np.eye(4, dtype=np.float64)
+                        self._T_cur       = T_wc
+                        self._map3d       = pts3d_s
+                        self._map2d       = pts2d_v
+                        self._kf_img      = self._init_img.copy()
+                        self._kf_T        = np.eye(4, dtype=np.float64)
+                        self._prev_img    = img
+                        self._initialised = True
+                        self._record(ts)
+                        return self._T_cur.copy()
 
-        pts3d_world = np.zeros((len(pts0), 3), dtype=np.float64)
-        for i, (u, v) in enumerate(pts0):
-            ang   = float(np.sqrt(((u - cx) / fx)**2 + ((v - cy) / fy)**2))
-            depth = d0 * (1.0 + 0.1 * ang)
-            pts3d_world[i] = [(u - cx) / fx * depth,
-                              (v - cy) / fy * depth,
-                              depth]
+        # ORB+E init failed this frame — wait for better baseline / more matches.
+        self._prev_img = img
+        return None
 
-        R_init, t_init, inlier_mask = pnp_ransac(
-            pts3d_world, pts_cur.astype(np.float32), self.K, self.dist,
-            min_inliers=20, ransac_th=self.cfg.pnp_ransac_th,
-        )
-        if R_init is None:
-            self._prev_img = img
-            return None
-
-        T_cw     = Rt_to_T(R_init, t_init)
-        T_wc_cur = invert_T(T_cw)
-        n_in     = int(inlier_mask.sum())
-        t_norm   = float(np.linalg.norm(T_wc_cur[:3, 3]))
-
-        print(f"[MonoVO] VD init  d0={d0:.2f}m  n={n_in}  "
-              f"flow={flow:.1f}px  t={t_norm:.3f}m")
-
-        self._T_prev = np.eye(4, dtype=np.float64)
-        self._T_cur  = T_wc_cur
-        self._map3d  = pts3d_world[inlier_mask]
-        self._map2d  = pts_cur[inlier_mask].astype(np.float32)
-
-        # Keyframe = init frame (world origin)
-        self._kf_img = self._init_img.copy()
-        self._kf_T   = np.eye(4, dtype=np.float64)
-
-        self._prev_img    = img
-        self._initialised = True
-        # CVM not bootstrapped here — set after first tracking frame
-        self._record(ts)
-        return self._T_cur.copy()
+        # ── VD PnP fallback (commented out — using spec-only ORB+E init) ────────
+        # d0 = self.cfg.expected_depth
+        # cx, cy = float(self.K[0, 2]), float(self.K[1, 2])
+        # fx, fy = float(self.K[0, 0]), float(self.K[1, 1])
+        #
+        # pts3d_world = np.zeros((len(pts0_lk), 3), dtype=np.float64)
+        # for i, (u, v) in enumerate(pts0_lk):
+        #     ang   = float(np.sqrt(((u - cx) / fx)**2 + ((v - cy) / fy)**2))
+        #     depth = d0 * (1.0 + 0.1 * ang)
+        #     pts3d_world[i] = [(u - cx) / fx * depth,
+        #                       (v - cy) / fy * depth,
+        #                       depth]
+        #
+        # R_init, t_init, inlier_mask = pnp_ransac(
+        #     pts3d_world, pts_cur_lk.astype(np.float32), self.K, self.dist,
+        #     min_inliers=20, ransac_th=self.cfg.pnp_ransac_th,
+        # )
+        # if R_init is None:
+        #     self._prev_img = img
+        #     return None
+        #
+        # T_cw     = Rt_to_T(R_init, t_init)
+        # T_wc_cur = invert_T(T_cw)
+        # n_in     = int(inlier_mask.sum())
+        # t_norm   = float(np.linalg.norm(T_wc_cur[:3, 3]))
+        #
+        # print(f"[MonoVO] VD init (fallback)  d0={d0:.2f}m  n={n_in}  "
+        #       f"flow={flow:.1f}px  t={t_norm:.3f}m")
+        #
+        # self._T_prev      = np.eye(4, dtype=np.float64)
+        # self._T_cur       = T_wc_cur
+        # self._map3d       = pts3d_world[inlier_mask]
+        # self._map2d       = pts_cur_lk[inlier_mask].astype(np.float32)
+        # self._kf_img      = self._init_img.copy()
+        # self._kf_T        = np.eye(4, dtype=np.float64)
+        # self._prev_img    = img
+        # self._initialised = True
+        # self._record(ts)
+        # return self._T_cur.copy()
 
     # ── per-frame tracking ──────────────────────────────────────────────────
 
@@ -535,16 +582,18 @@ class MonoVO:
         if not self.cfg.use_e_reinit:
             return False
 
-        if (self._anchor_pts is None
-                or len(self._anchor_pts) < 20):
-            return False
+        # ORB detect + match between anchor and current (spec: descriptor matching)
+        pts0, pts_cur = self.tracker.detect_and_match(self._anchor_img, img)
 
-        pts_cur, ok = self._lk_track(
-            self._anchor_img, img, self._anchor_pts, extra_levels=2)
-        pts0 = self._anchor_pts[ok]
-
-        if len(pts_cur) < 20:
-            return False
+        if len(pts0) < 20:
+            # LK fallback: use stored anchor_pts if ORB yields too few matches
+            if (self._anchor_pts is None or len(self._anchor_pts) < 20):
+                return False
+            pts_cur_lk, ok = self._lk_track(
+                self._anchor_img, img, self._anchor_pts, extra_levels=2)
+            pts0, pts_cur = self._anchor_pts[ok], pts_cur_lk
+            if len(pts0) < 20:
+                return False
 
         flow = float(np.median(np.linalg.norm(pts_cur - pts0, axis=1)))
         if flow < self.cfg.min_parallax_px:

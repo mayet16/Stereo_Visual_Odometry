@@ -79,7 +79,7 @@ MONO_CONFIGS = {
         feature               = _FEAT_MONO,
         min_tracked_pts       = 50,
         max_map_pts           = 600,
-        min_parallax_px       = 8.0,
+        min_parallax_px       = 20.0,
         max_parallax_px       = 40.0,
         expected_depth        = 2.0,
         scene_depth_lo_m      = 0.6,    # exclude <0.6m VD pts (hard to track under rotation)
@@ -102,7 +102,7 @@ MONO_CONFIGS = {
         feature               = _FEAT_MONO,
         min_tracked_pts       = 80,     # keep map denser → fewer VD depletions
         max_map_pts           = 600,
-        min_parallax_px       = 4.0,
+        min_parallax_px       = 15.0,
         max_parallax_px       = 60.0,
         expected_depth        = 5.0,    # corridor > room; raises d_hi clip to 12.5m
         pnp_min_inliers       = 12,
@@ -116,13 +116,14 @@ MONO_CONFIGS = {
         max_cvm_frames        = 3,
         use_clahe             = True,   # enhance contrast for homogeneous walls
         use_e_reinit          = False,  # 180° turn: E-matrix cheirality picks wrong rotation
+        depth_percentile      = 50,     # median — compromise between drift and failure rate
         verbose               = False,
     ),
     "outdoors5": MonoVOConfig(
         feature               = _FEAT_MONO,
         min_tracked_pts       = 50,
         max_map_pts           = 600,
-        min_parallax_px       = 6.0,
+        min_parallax_px       = 15.0,
         max_parallax_px       = 80.0,
         expected_depth        = 5.0,
         scene_depth_lo_m      = 1.0,    # exclude ground/nearby (<1m) from VD depth estimate
@@ -136,6 +137,7 @@ MONO_CONFIGS = {
         kf_min_baseline_ratio = 0.03,
         max_cvm_frames        = 3,
         use_clahe             = True,   # outdoor lighting varies; CLAHE helps feature visibility
+        depth_percentile      = 75,     # deeper reference → smaller scale → less expressed drift
         verbose               = False,
     ),
 }

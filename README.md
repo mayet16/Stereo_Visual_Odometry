@@ -93,50 +93,50 @@ flowchart LR
 
 | Metric | Mono VO | Stereo VO | Winner |
 |---|---|---|---|
-| ATE RMSE (Sim3 / SE3) | 1.202 m | **0.439 m** | ✓ Stereo |
-| Scale | 0.201 (×5 error) | 1.000 (metric) | |
-| RPE trans 100m (d=100m) | N/A (83.8 m < 100 m) | 3.553 m / 885 seg | |
-| RPE rot 60° (θ=60°) | 81.813° / 2551 seg | 89.081° / 2559 seg | |
-| Est. traj length | 83.8 m | 143.3 m (GT: 140.9 m) | |
-| Tracking failures | 3 / 2882 frames | 3 / 2882 frames | |
-| Success rate | 99.9% | 99.9% | |
-| Runtime | 114.7 fps | 37.7 fps | |
+| ATE RMSE (Sim3 / SE3) | 1.215 m | **0.439 m** | ✓ Stereo |
+| Scale | 0.111 (×9 underscaled) | 1.000 (metric) | |
+| RPE trans 100m (d=100m) | N/A (90.0 m < 100 m) | 3.553 m / 885 seg | |
+| RPE rot 60° (θ=60°) | 84.215° / 2496 seg | 89.081° / 2559 seg | |
+| Est. traj length | 90.0 m | 143.3 m (GT: 140.9 m) | |
+| Tracking failures | 5 / 2882 frames | 3 / 2882 frames | |
+| Success rate | 99.83% | 99.90% | |
+| Runtime | 115.1 fps | 40.1 fps | |
 
 ### corridor3
 
 | Metric | Mono VO | Stereo VO | Winner |
 |---|---|---|---|
-| Start-end drift | 13.560 m | **6.472 m** | ✓ Stereo |
+| Start-end drift | 16.290 m | **6.472 m** | ✓ Stereo |
 | RPE trans d=1 ¹ | N/A | 0.068 m/frame | |
-| Local ATE start block | 0.477 m (n=512) | 0.110 m (n=512) | |
-| Local ATE end block | 0.782 m (n=680) | 0.232 m (n=680) | |
-| Est. traj length | 212.2 m | 299.5 m | GT: N/A (partial) |
+| Local ATE start block | 0.737 m (n=512) | 0.110 m (n=512) | |
+| Local ATE end block | 0.720 m (n=675) | 0.232 m (n=675) | |
+| Est. traj length | 200.2 m | 299.5 m | GT: N/A (partial) |
 | Tracking failures | 12 / 5802 frames | 15 / 5802 frames | |
 | Success rate | 99.79% | 99.74% | |
-| Runtime | 112.1 fps | 47.5 fps | |
+| Runtime | 106.6 fps | 49.4 fps | |
 
 ### outdoors5
 
 | Metric | Mono VO | Stereo VO | Winner |
 |---|---|---|---|
-| Start-end drift | **15.736 m** | 70.281 m | ✓ Mono ² |
+| Start-end drift | **16.516 m** | 70.281 m | ✓ Mono ² |
 | RPE trans d=1 ¹ | N/A | 0.087 m/frame | |
-| Local ATE start block | 0.690 m (n=1182) | 0.165 m (n=1182) | |
-| Local ATE end block | 0.832 m (n=1560) | 1.195 m (n=1560) | |
-| Est. traj length | 633.7 m | 920.7 m | GT: N/A (partial) |
-| Tracking failures | 10 / 17747 frames | 15 / 17747 frames | |
-| Success rate | 99.94% | 99.92% | |
-| Runtime | 102.4 fps | 42.0 fps | |
+| Local ATE start block | 0.661 m (n=1182) | 0.165 m (n=1182) | |
+| Local ATE end block | 0.880 m (n=1555) | 1.195 m (n=1555) | |
+| Est. traj length | 455.8 m | 920.7 m | GT: N/A (partial) |
+| Tracking failures | 2 / 17747 frames | 15 / 17747 frames | |
+| Success rate | 99.99% | 99.92% | |
+| Runtime | 105.1 fps | 44.4 fps | |
 
 ¹ Computed only on consecutive GT-covered frames (start and end blocks separately).
 Mono RPE omitted for drift sequences — arbitrary scale makes it uninformative.
 
-² Outdoors5 mono wins the drift metric but severely underscales the trajectory (estimated path
-~633 m for a ~887 s outdoor walk at scale=0.201). Stereo has correct metric scale but accumulates
+² Outdoors5 mono wins the drift metric but underscales the trajectory (estimated path ~456 m for
+a ~887 s outdoor walk; ORB+E init scale ≈ 0.103). Stereo has correct metric scale but accumulates
 heading drift from noisy disparity at outdoor distances (fB/d noise at 15 m ≈ 6 m/px). See Analysis section.
 
-Mono VO runs at **102–115 fps** (~5–6× real-time at 20 Hz).
-Stereo VO runs at **38–48 fps** (~1.9–2.4× real-time).
+Mono VO runs at **105–115 fps** (~5.3–5.8× real-time at 20 Hz).
+Stereo VO runs at **40–50 fps** (~2.0–2.5× real-time).
 
 ---
 
@@ -403,9 +403,9 @@ NumPy seed  : np.random.seed(42)
 ```
 
 Runtime per sequence (measured, Python 3.13, OpenCV 4.13, no GPU):
-- room2:     mono ~25s  (114.7 fps),  stereo ~76s   (37.7 fps)
-- corridor3: mono ~52s  (112.1 fps),  stereo ~122s  (47.5 fps)
-- outdoors5: mono ~173s (102.4 fps),  stereo ~423s  (42.0 fps)
+- room2:     mono ~25s  (115.1 fps),  stereo ~72s   (40.1 fps)
+- corridor3: mono ~54s  (106.6 fps),  stereo ~118s  (49.4 fps)
+- outdoors5: mono ~169s (105.1 fps),  stereo ~400s  (44.4 fps)
 
 ---
 
@@ -426,10 +426,10 @@ ground-truth with 7 DoFs, while stereo provides the true scale and is aligned wi
 ## Implementation Notes
 
 ### Monocular VO
-- **Initialization**: ORB detect → LK track → parallax gate → Essential matrix → recoverPose → triangulate
+- **Initialization**: ORB detect → BFMatcher kNN + Lowe ratio test → Essential matrix RANSAC (5-pt) → recoverPose → triangulate; scale recovered from the Nth-percentile of depth-filtered inliers (room2: 25th pct, corridor3: 50th pct, outdoors5: 75th pct relative to expected_depth d₀). A FAST+LK parallax gate ensures sufficient baseline before ORB+E is attempted.
 - **Tracking**: LK optical flow → PnP+RANSAC → solvePnPRefineLM (local BA) → velocity/rotation check → map extension
+- **Relocalization** (spec §VI): when tracking is lost, `_try_reinit()` performs recovery in two stages: (1) **anchor 3D-PnP** (`e_reinit`) — solve pose from stored anchor map points using `cv2.solvePnPRansac`; (2) **VD fallback** (`vd_reinit`) — FAST+LK re-initialization at estimated scene median depth. Both counters are reported in the per-sequence tracking summary.
 - **Local BA**: sliding window of 7 poses, run every 5 frames
-- **Scale**: Virtual-depth (VD) initialisation — seed depth d₀ per sequence (room2: 2.0 m, corridor3/outdoors5: 5.0 m); scale recovered from triangulated point depths at the first keyframe
 
 ### Stereo VO
 - **Motion estimation method**: **3D–2D PnP** — 3D map points from the previous frame are matched to 2D feature positions in the current frame, then `cv2.solvePnPRansac` recovers the relative pose. The spec also allows 3D–3D ICP alignment; 3D–2D PnP was chosen because it works directly with the sparse LK-tracked keypoints without requiring dense overlapping point sets.
@@ -467,7 +467,7 @@ They solve orthogonal problems: SGBM provides the metric 3D map; LK provides
 | `epipolar.recover_pose()` | §III-A Decomposition | `cv2.recoverPose` + cheirality check |
 | `epipolar.triangulate_points()` | §III-B Triangulation | `cv2.triangulatePoints` |
 | `epipolar.pnp_ransac()` | §III-C Pose from 3D–2D | `cv2.solvePnPRansac` |
-| `MonoVO._vd_reinit()` | §III-D Scale initialisation | Virtual-depth seeding (d₀ = 2–5 m) |
+| `MonoVO._try_init()` | §III-D Scale initialisation | ORB+E init: triangulate → depth-percentile scale (d₀ = 2–5 m per sequence); `_vd_reinit()` used as fallback only |
 | `epipolar.refine_pose_ba()` | §IV Local optimisation | Sliding-window bundle adjustment (7 poses) |
 
 Reference: D. Scaramuzza and F. Fraundorfer, "Visual Odometry [Tutorial]," IEEE R&A Magazine, 2011.
@@ -491,25 +491,28 @@ Reference: R. Mur-Artal and J. D. Tardós, "ORB-SLAM2," IEEE T-RO, 2017.
 ## Analysis and Findings
 
 ### room2 — Stereo advantage: metric scale in small environments
-Stereo achieves **64% lower ATE** (0.439 m vs 1.202 m). The mono scale collapses to 0.201 (~5×
-underscaled) because the camera sweeps within 0.15–2 m of walls, making the virtual-depth
-initialisation unreliable. Stereo's metric depth from disparity anchors the map correctly and
-maintains scale=1.000 throughout. CLAHE is enabled for both pipelines on room2: the structured
-indoor scene benefits from adaptive contrast, reducing stereo failures from 18→3 and ATE from
-0.785→0.439 m.
+Stereo achieves **64% lower ATE** (0.439 m vs 1.215 m). The mono scale is 0.111 (~9× underscaled)
+because ORB features in the small room bias toward far-wall textures, over-estimating scene depth
+and under-estimating scale at ORB+E init time. Stereo's metric depth from disparity anchors the
+map correctly and maintains scale=1.000 throughout. CLAHE is enabled for both pipelines on room2:
+the structured indoor scene benefits from adaptive contrast, reducing stereo failures from 18→3
+and ATE from 0.785→0.439 m.
 
 ### corridor3 — Stereo advantage: heading accuracy over long hallways
-Stereo drift is **2.1× lower** (6.47 m vs 13.56 m). The corridor's long straight path amplifies any
+Stereo drift is **2.5× lower** (6.47 m vs 16.29 m). The corridor's long straight path amplifies any
 heading error: mono accumulates scale-and-heading drift over 290 s, while stereo's metric 3D map
-keeps the heading constrained through PnP. CLAHE and a large block size (21 px) stabilise the
-SGBM disparity on homogeneous wall textures.
+keeps the heading constrained through PnP. The mono drift is higher than VD-init results because
+the ORB+E init produces a more geometrically honest (less compressed) trajectory — the expressed
+drift reflects true heading error rather than scale-compression artefact. CLAHE and a large block
+size (21 px) stabilise the SGBM disparity on homogeneous wall textures.
 
 ### outdoors5 — Known limitation: short baseline at outdoor distances
-Mono wins the drift metric (15.7 m vs 70.3 m), but for a fundamentally different reason: mono
-lacks metric scale (estimated path 633.7 m in virtual-depth units vs stereo's 920.7 m metric estimate).
-The start-end drift appears small because the scale error compresses the whole path — a 15.7 m
-error on a non-metric 633.7 m path cannot be directly compared to stereo's 70.3 m error on a
-metric 920.7 m path.
+Mono wins the drift metric (16.5 m vs 70.3 m), but for a fundamentally different reason: mono
+lacks metric scale (estimated path 455.8 m vs stereo's 920.7 m metric estimate). The start-end
+drift appears smaller because the scale underestimate compresses the whole path — a 16.5 m error
+on a non-metric 455.8 m path cannot be directly compared to stereo's 70.3 m error on a metric
+920.7 m path. Mono tracking failures dropped significantly (7→2) with the ORB+E init, reflecting
+more stable feature matching on outdoor texture.
 
 Stereo correctly estimates metric distances but accumulates **heading drift** from noisy disparity
 at outdoor feature depths of 5–20 m. With fB = 18.92 px·m, a feature at 15 m has only ≈1.3 px
@@ -520,13 +523,16 @@ not an implementation deficiency. Systems with longer baselines, IMU fusion, or 
 (e.g., VINS-Mono, ORB-SLAM3) overcome this; a classical frame-to-frame pipeline cannot.
 
 ### Tracking robustness
-| Sequence | Mono failures | Stereo failures | Stereo reinits |
-|---|---|---|---|
-| room2 | 3 | 3 | 3 |
-| corridor3 | 12 | 15 | 15 |
-| outdoors5 | **10** | 15 | 15 |
 
-Stereo `n_reinits` counts failure-recovery events only (PnP failure, insufficient tracked points, velocity spike) — equals `n_failures` because every failure triggers immediate SGBM-based map replenishment. Mono VD-reinit events: corridor3=1; others=0. Mono E-reinit events: all sequences=0.
+| Sequence | Mono failures | Mono relocalization attempts | Stereo failures | Stereo reinits |
+|---|---|---|---|---|
+| room2 | 5 | e_reinit=0, vd_reinit=0 | 3 | 3 |
+| corridor3 | 12 | e_reinit=0, vd_reinit=1 | 15 | 15 |
+| outdoors5 | **2** | e_reinit=0, vd_reinit=0 | 15 | 15 |
+
+**Mono relocalization** (per spec §VI): when tracking fails, `_try_reinit()` attempts pose recovery via two strategies — `e_reinit` (anchor 3D-PnP: solve pose from stored anchor map points) and `vd_reinit` (VD-fallback: FAST+LK re-initialization at median scene depth). These are the system's relocalization attempts as defined in §VI of the project specification. The corridor3 `vd_reinit=1` reflects one transient tracking loss mid-sequence recovered via VD fallback.
+
+Stereo `n_reinits` counts failure-recovery events only (PnP failure, insufficient tracked points, velocity spike) — equals `n_failures` because every failure triggers immediate SGBM-based map replenishment.
 
 ### Illumination sensitivity (CLAHE ablation)
 
@@ -534,22 +540,23 @@ CLAHE (clip limit 2.0, tile 8×8) is applied selectively per sequence. Productio
 
 | Sequence | Pipeline | CLAHE | Failures | ATE / Drift |
 |---|---|---|---|---|
-| room2 | Mono | ON (prod) | 3 | 1.202 m ATE |
-| room2 | Mono | OFF (abl) | 39 | 1.192 m ATE |
+| room2 | Mono | ON (prod) | 5 | 1.215 m ATE |
+| room2 | Mono | OFF (abl) | 42 | 1.209 m ATE |
 | room2 | Stereo | ON (prod) | 3 | **0.439 m ATE** |
 | room2 | Stereo | OFF (abl) | 18 | 0.785 m ATE |
-| corridor3 | Mono | ON (prod) | 12 | 13.56 m drift |
-| corridor3 | Mono | OFF (abl) | 96 | 20.07 m drift |
+| corridor3 | Mono | ON (prod) | 12 | 16.29 m drift |
+| corridor3 | Mono | OFF (abl) | 85 | 25.60 m drift |
 | corridor3 | Stereo | ON (prod) | 15 | 6.47 m drift |
 | corridor3 | Stereo | OFF (abl) | 99 | 19.63 m drift |
-| outdoors5 | Mono | ON (prod) | 10 | 15.74 m drift |
-| outdoors5 | Mono | OFF (abl) | 60 | 15.47 m drift |
+| outdoors5 | Mono | ON (prod) | 2 | 16.52 m drift |
+| outdoors5 | Mono | OFF (abl) | 74 | 23.55 m drift |
 | outdoors5 | Stereo | OFF (prod) | 15 | 70.28 m drift |
 | outdoors5 | Stereo | ON  (abl) | 11 | **178.19 m drift** |
 
 Key findings:
-- **Room2**: CLAHE ON for both pipelines — structured indoor scene benefits from adaptive contrast. Disabling stereo CLAHE raises failures 3→18 (+15) and ATE 0.439→0.785 m (+0.346 m).
-- **Corridor3**: CLAHE is essential — disabling it raises mono failures 12→96 (+84, +6.5 m drift) and stereo failures 15→99 (+84, +13.2 m drift). Homogeneous walls have too little texture without adaptive contrast enhancement.
+- **Room2**: CLAHE ON for both pipelines — structured indoor scene benefits from adaptive contrast. Disabling mono CLAHE raises failures 5→42 (+37) with negligible ATE change (1.215→1.209 m). Disabling stereo CLAHE raises failures 3→18 (+15) and ATE 0.439→0.785 m (+0.346 m).
+- **Corridor3**: CLAHE is essential — disabling it raises mono failures 12→85 (+73, +9.3 m drift) and stereo failures 15→99 (+84, +13.2 m drift). Homogeneous walls have too little texture without adaptive contrast enhancement.
+- **Outdoors5 mono**: CLAHE is critical for ORB+E init — disabling it raises failures 2→74 (+72) and drift 16.52→23.55 m (+7.0 m). Without CLAHE the ORB detector finds fewer high-quality matches in variable outdoor lighting, degrading the depth-percentile scale estimate at init.
 - **Outdoors5 stereo**: CLAHE is harmful — enabling it increases drift 70.28→178.19 m (+107.9 m). CLAHE over-enhances sky/foliage gradients, corrupting SGBM disparity on outdoor scenes.
 
 ---
