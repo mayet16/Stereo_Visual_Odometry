@@ -1,65 +1,33 @@
-"""
-utils/visualizer.py
-===================
-Two visual utilities for the Stereo VO project:
-
-1. LiveVisualizer  — TWO separate OpenCV windows shown simultaneously:
-       Window A  "title — features" : camera frame with tracked features
-                   green dots  = current feature positions
-                   orange dots = previous feature positions
-                   green lines = optical flow vectors
-       Window B  "title — trajectory" : top-down trajectory with AUTO-SCALE
-                   blue  = estimated trajectory (always fully visible)
-                   green = ground-truth trajectory
-                   cyan dot = current camera position
-
-   Performance fixes (problems 1 & 2):
-   - Trajectory redraws use a DECIMATED path (every Nth point stored for
-     drawing) so cost stays O(N/decimate) not O(N).  Full history is kept
-     separately for scale computation — only the last point is added each
-     call, so scale computation is O(1) with running min/max.
-   - update() is designed to be called only every `update_every` frames
-     from main.py — the VO loop is never blocked by drawing.
-   - cv2.waitKey(1) is the minimum — no blocking wait.
-   - Polylines used instead of per-segment line draws — 10-20× faster for
-     long trajectories.
-
-2. save_3d_trajectory — dark-themed 3-D trajectory figure saved as PNG.
-"""
-
 import os
 import cv2
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D   # noqa: F401
+from mpl_toolkits.mplot3d import Axes3D  # registers 3D projection
 
 # Must be set before any cv2.namedWindow call
 os.environ.setdefault("QT_QPA_PLATFORM",  "xcb")
-os.environ.setdefault("QT_LOGGING_RULES", "*.debug=false;qt.qpa.*=false")
+os.environ.setdefault("QT_LOGGING_RULES",
+                       "*.debug=false;*.warning=false;"
+                       "qt.qpa.*=false;"
+                       "qt.core.qobject.movethread=false")
 
 
-# ── colour palette (BGR for OpenCV) ──────────────────────────────────────────
-_C_TRACKED = (0,   255,   0)   # green  — current feature
-_C_PREV    = (0,   165, 255)   # orange — previous feature
-_C_FAIL    = (0,     0, 255)   # red    — failure text
-_C_EST     = (255,  80,  80)   # blue   — estimated trajectory
-_C_GT      = (80,  200,  80)   # green  — ground-truth trajectory
-_C_CUR     = (0,   255, 255)   # cyan   — current position dot
-_C_START   = (0,   255,   0)   # green  — start dot
+_C_TRACKED = (0,   255,   0)
+_C_PREV    = (0,   165, 255)
+_C_FAIL    = (0,     0, 255)
+_C_EST     = (255,  80,  80)
+_C_GT      = (80,  200,  80)
+_C_CUR     = (0,   255, 255)
+_C_START   = (0,   255,   0)
 _FONT      = cv2.FONT_HERSHEY_SIMPLEX
 
 
-# ── helper: world XZ → canvas pixel ──────────────────────────────────────────
 def _to_px(x: float, z: float,
            cx: float, cz: float,
            scale: float, H: int, W: int) -> tuple:
-    """
-    Project world (x, z) → canvas pixel (px, py).
-    cx, cz : world coordinates mapped to canvas centre.
-    Z forward = up on canvas.
-    """
+    """Map world (x, z) to canvas pixel; Z forward = up on canvas."""
     px = int(W / 2 + (x - cx) * scale)
     py = int(H / 2 - (z - cz) * scale)
     return (int(np.clip(px, 0, W - 1)),
@@ -68,10 +36,7 @@ def _to_px(x: float, z: float,
 
 def _pts_to_px_array(xz_list: list, cx: float, cz: float,
                      scale: float, H: int, W: int) -> np.ndarray:
-    """
-    Convert list of (x, z) world points → Nx1x2 int32 array for polylines.
-    Uses numpy vectorisation — much faster than per-point _to_px calls.
-    """
+    """Convert (x, z) world points to Nx1x2 int32 for cv2.polylines."""
     if len(xz_list) < 2:
         return None
     arr = np.array(xz_list, dtype=np.float32)   # Nx2
@@ -82,20 +47,11 @@ def _pts_to_px_array(xz_list: list, cx: float, cz: float,
     return np.stack([px, py], axis=1).reshape(-1, 1, 2)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 1.  LiveVisualizer
-# ─────────────────────────────────────────────────────────────────────────────
 class LiveVisualizer:
-    """
-    Two OpenCV windows — features and trajectory — updated every N frames.
+    """Two OpenCV windows (features + trajectory) updated every N frames.
 
-    Parameters
-    ----------
-    title        : base window title
-    canvas_hw    : (height, width) in pixels for EACH window
-    show         : False = headless, windows not opened
-    decimate     : keep every Nth point for trajectory drawing (default 3).
-                   Full history kept for auto-scale; only affects draw cost.
+    Trajectory drawing uses a decimated path (every Nth point) so draw cost
+    stays O(N/decimate); running min/max keeps auto-scale computation O(1).
     """
 
     def __init__(self,
@@ -111,22 +67,17 @@ class LiveVisualizer:
         self._win_feat = f"{title} — features"
         self._win_traj = f"{title} — trajectory"
 
-        # full history for running min/max (scale computation)
-        self._xmin = self._xmax =  None
-        self._zmin = self._zmax =  None
+        self._xyz_min: "np.ndarray | None" = None
+        self._xyz_max: "np.ndarray | None" = None
 
-        # decimated path for drawing — updated every `decimate` calls
-        self._est_draw: list = []   # list of (x, z)
-        self._gt_draw:  list = []   # list of (x, z)
+        self._est_draw3d: list = []
+        self._est_cur_3d:   tuple = (0.0, 0.0, 0.0)
+        self._est_start_3d: "tuple | None" = None
 
-        # current position (always updated, for the live cyan dot)
-        self._est_cur: tuple = (0.0, 0.0)
-        self._gt_cur:  tuple = None
+        self._gt_draw: list = []
+        self._gt_cur:  "tuple | None" = None
 
-        # start position
-        self._est_start: tuple = None
-
-        self._call_count = 0   # counts update() calls for decimation
+        self._call_count  = 0
         self._stereo_mode = False
 
         if self.show:
@@ -138,8 +89,6 @@ class LiveVisualizer:
             cv2.moveWindow(self._win_feat, 0,      50)
             cv2.moveWindow(self._win_traj, W + 10, 50)
 
-    # ── public API ────────────────────────────────────────────────────────────
-
     def update(self,
                img:        np.ndarray,
                pts_cur:    "np.ndarray | None",
@@ -150,58 +99,27 @@ class LiveVisualizer:
                extra_info: str                 = "",
                img_right:  "np.ndarray | None" = None,
                pts_right:  "np.ndarray | None" = None) -> None:
-        """
-        Update both windows.  Designed to be called every N frames from
-        main.py — NOT every frame — to keep the VO loop fast.
-
-        Parameters
-        ----------
-        img        : left camera frame — grayscale or BGR uint8
-        pts_cur    : Nx2 float32 — current feature positions (green dots)
-        pose       : 4×4 float64 T_world_cam
-        gt_pose    : 4×4 float64 T_world_cam or None
-        frame_id   : frame index for overlay text
-        n_failures : cumulative failure count
-        extra_info : optional one-line string (e.g. "scale=0.020")
-        img_right  : right camera frame for stereo side-by-side display (optional)
-        pts_right  : Nx2 float32 — right-frame feature positions (optional)
-        """
         self._call_count += 1
 
-        # ── update trajectory data ────────────────────────────────────────
-        pos = pose[:3, 3]
-        x, z = float(pos[0]), float(pos[2])
-        self._est_cur = (x, z)
+        p = pose[:3, 3]
+        x, y, z = float(p[0]), float(p[1]), float(p[2])
 
-        if self._est_start is None:
-            self._est_start = (x, z)
+        self._est_cur_3d = (x, y, z)
 
-        # update running min/max (O(1) per call)
-        if self._xmin is None:
-            self._xmin = self._xmax = x
-            self._zmin = self._zmax = z
+        if self._est_start_3d is None:
+            self._est_start_3d = (x, y, z)
+
+        pos = np.array([x, y, z], dtype=np.float64)
+        if self._xyz_min is None:
+            self._xyz_min = pos.copy()
+            self._xyz_max = pos.copy()
         else:
-            self._xmin = min(self._xmin, x)
-            self._xmax = max(self._xmax, x)
-            self._zmin = min(self._zmin, z)
-            self._zmax = max(self._zmax, z)
+            self._xyz_min = np.minimum(self._xyz_min, pos)
+            self._xyz_max = np.maximum(self._xyz_max, pos)
 
-        if gt_pose is not None:
-            g = gt_pose[:3, 3]
-            gx, gz = float(g[0]), float(g[2])
-            self._gt_cur = (gx, gz)
-            self._xmin = min(self._xmin, gx)
-            self._xmax = max(self._xmax, gx)
-            self._zmin = min(self._zmin, gz)
-            self._zmax = max(self._zmax, gz)
-
-        # decimated draw path — append every Nth call
         if self._call_count % self.decimate == 0:
-            self._est_draw.append((x, z))
-            if gt_pose is not None:
-                self._gt_draw.append((gx, gz))
+            self._est_draw3d.append((x, y, z))
 
-        # ── draw both windows ─────────────────────────────────────────────
         if img_right is not None and not self._stereo_mode and self.show:
             self._stereo_mode = True
             H, W = self.canvas_hw
@@ -218,24 +136,20 @@ class LiveVisualizer:
             cv2.waitKey(1)
 
     def close(self) -> None:
-        """Destroy both OpenCV windows."""
         if self.show:
             cv2.destroyWindow(self._win_feat)
             cv2.destroyWindow(self._win_traj)
 
     def reset(self) -> None:
-        """Clear all history — call between sequences."""
-        self._xmin = self._xmax = None
-        self._zmin = self._zmax = None
-        self._est_draw  = []
-        self._gt_draw   = []
-        self._est_cur   = (0.0, 0.0)
-        self._gt_cur    = None
-        self._est_start = None
-        self._call_count = 0
-        self._stereo_mode = False
-
-    # ── window A: feature frame ───────────────────────────────────────────────
+        self._xyz_min       = None
+        self._xyz_max       = None
+        self._est_draw3d    = []
+        self._gt_draw       = []
+        self._est_cur_3d    = (0.0, 0.0, 0.0)
+        self._gt_cur        = None
+        self._est_start_3d  = None
+        self._call_count    = 0
+        self._stereo_mode   = False
 
     def _draw_features(self, img, pts_cur,
                        frame_id, n_failures, extra_info,
@@ -258,7 +172,6 @@ class LiveVisualizer:
 
         vis = _render_frame(img, pts_cur)
 
-        # text overlay with dark background box
         n_trk = 0 if pts_cur is None else len(pts_cur)
         lines = [
             (f"Frame    {frame_id:05d}", (200, 200, 200)),
@@ -278,7 +191,6 @@ class LiveVisualizer:
         if img_right is None:
             return vis
 
-        # Stereo: side-by-side left | right
         cv2.putText(vis, "LEFT", (W - 42, H - 8),
                     _FONT, 0.42, (180, 180, 180), 1, cv2.LINE_AA)
         vis_r = _render_frame(img_right, pts_right)
@@ -288,31 +200,40 @@ class LiveVisualizer:
         divider = np.full((H, 2, 3), 60, dtype=np.uint8)
         return np.hstack([vis, divider, vis_r])
 
-    # ── window B: trajectory canvas ───────────────────────────────────────────
-
     def _draw_trajectory(self) -> np.ndarray:
         H, W = self.canvas_hw
         canvas = np.zeros((H, W, 3), dtype=np.uint8)
 
-        # need at least one point
-        if self._xmin is None:
+        if self._xyz_min is None or len(self._est_draw3d) < 2:
             return canvas
 
-        # ── auto-scale: fit all stored points ─────────────────────────────
-        pad   = 0.15
-        rx    = max(self._xmax - self._xmin, 0.5) * (1 + pad)
-        rz    = max(self._zmax - self._zmin, 0.5) * (1 + pad)
-        scale = min((W - 20) / rx, (H - 20) / rz)
-        cx    = (self._xmin + self._xmax) / 2
-        cz    = (self._zmin + self._zmax) / 2
+        # Auto-select the two highest-range axes (= floor plane) so the view
+        # adapts to any camera mounting angle without GT alignment.
+        ranges = self._xyz_max - self._xyz_min
+        order  = np.argsort(ranges)[::-1]
+        a0, a1 = int(order[0]), int(order[1])
+        names  = ['X', 'Y', 'Z']
 
-        # ── metric grid ────────────────────────────────────────────────────
-        grid_px = int(scale)   # pixels per 1 metre
+        arr3d   = np.array(self._est_draw3d, dtype=np.float32)
+        xz_list = list(zip(arr3d[:, a0].tolist(), arr3d[:, a1].tolist()))
+
+        cur_2d   = (self._est_cur_3d[a0],   self._est_cur_3d[a1])
+        start_2d = (self._est_start_3d[a0], self._est_start_3d[a1]) \
+                   if self._est_start_3d else None
+
+        pad   = 0.15
+        xmin, xmax = float(self._xyz_min[a0]), float(self._xyz_max[a0])
+        zmin, zmax = float(self._xyz_min[a1]), float(self._xyz_max[a1])
+        rx    = max(xmax - xmin, 0.5) * (1 + pad)
+        rz    = max(zmax - zmin, 0.5) * (1 + pad)
+        scale = min((W - 20) / rx, (H - 20) / rz)
+        cx    = (xmin + xmax) / 2
+        cz    = (zmin + zmax) / 2
+
+        grid_px = int(scale)
         if grid_px >= 8:
-            x0 = int(np.floor(self._xmin - 1))
-            x1 = int(np.ceil(self._xmax  + 1))
-            z0 = int(np.floor(self._zmin - 1))
-            z1 = int(np.ceil(self._zmax  + 1))
+            x0 = int(np.floor(xmin - 1));  x1 = int(np.ceil(xmax + 1))
+            z0 = int(np.floor(zmin - 1));  z1 = int(np.ceil(zmax + 1))
             for xi in range(x0, x1 + 1):
                 px = int(W / 2 + (xi - cx) * scale)
                 if 0 <= px < W:
@@ -322,53 +243,35 @@ class LiveVisualizer:
                 if 0 <= pz < H:
                     cv2.line(canvas, (0, pz), (W, pz), (30, 30, 30), 1)
 
-        # ── GT trajectory using polylines (fast) ──────────────────────────
-        if len(self._gt_draw) > 1:
-            pts = _pts_to_px_array(self._gt_draw, cx, cz, scale, H, W)
-            if pts is not None:
-                cv2.polylines(canvas, [pts], False, _C_GT, 1, cv2.LINE_AA)
+        pts = _pts_to_px_array(xz_list, cx, cz, scale, H, W)
+        if pts is not None:
+            cv2.polylines(canvas, [pts], False, _C_EST, 2, cv2.LINE_AA)
 
-        # ── estimated trajectory using polylines (fast) ───────────────────
-        if len(self._est_draw) > 1:
-            pts = _pts_to_px_array(self._est_draw, cx, cz, scale, H, W)
-            if pts is not None:
-                cv2.polylines(canvas, [pts], False, _C_EST, 2, cv2.LINE_AA)
+        if start_2d is not None:
+            sp = _to_px(*start_2d, cx, cz, scale, H, W)
+            cv2.circle(canvas, sp, 6, _C_START, -1)
 
-        # ── start and current position markers ────────────────────────────
-        if self._est_start is not None:
-            sp = _to_px(*self._est_start, cx, cz, scale, H, W)
-            cv2.circle(canvas, sp, 6, _C_START, -1)   # green = start
+        cur_px = _to_px(*cur_2d, cx, cz, scale, H, W)
+        cv2.circle(canvas, cur_px, 6, _C_CUR, -1)
 
-        cur_px = _to_px(*self._est_cur, cx, cz, scale, H, W)
-        cv2.circle(canvas, cur_px, 6, _C_CUR, -1)     # cyan = current pos
-
-        if self._gt_cur is not None:
-            gp = _to_px(*self._gt_cur, cx, cz, scale, H, W)
-            cv2.circle(canvas, gp, 4, _C_GT, -1)      # green = GT current
-
-        # ── legend ────────────────────────────────────────────────────────
-        scale_str = (f"1m={int(scale)}px" if scale >= 1
-                     else f"1px={1/scale:.1f}m")
+        scale_str  = (f"1m={int(scale)}px" if scale >= 1
+                      else f"1px={1/scale:.1f}m")
+        view_label = f"Top-down  {names[a0]}–{names[a1]}"
         info_lines = [
-            ("EST",          _C_EST),
-            ("GT",           _C_GT),
-            ("Top-down X-Z", (180, 180, 180)),
-            (scale_str,      (140, 140, 140)),
-            (f"n={len(self._est_draw)*self.decimate}", (120, 120, 120)),
+            ("EST",         _C_EST),
+            (view_label,    (180, 180, 180)),
+            (scale_str,     (140, 140, 140)),
+            (f"n={len(self._est_draw3d)*self.decimate}", (120, 120, 120)),
         ]
         box_h = 12 + len(info_lines) * 15
-        cv2.rectangle(canvas, (0, 0), (125, box_h), (0, 0, 0),  -1)
-        cv2.rectangle(canvas, (0, 0), (125, box_h), (50, 50, 50), 1)
+        cv2.rectangle(canvas, (0, 0), (130, box_h), (0, 0, 0),  -1)
+        cv2.rectangle(canvas, (0, 0), (130, box_h), (50, 50, 50), 1)
         for i, (txt, col) in enumerate(info_lines):
             cv2.putText(canvas, txt, (4, 12 + i * 15),
                         _FONT, 0.40, col, 1, cv2.LINE_AA)
 
         return canvas
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 2.  save_3d_trajectory  +  save_comparison_3d
-# ─────────────────────────────────────────────────────────────────────────────
 
 def save_3d_trajectory(
     est_poses: list,
@@ -377,14 +280,9 @@ def save_3d_trajectory(
     out_path:  str  = "traj_3d.png",
     align:     str  = "sim3",
     dpi:       int  = 130,
+    show_gt:   bool = True,
 ) -> None:
-    """
-    Save a dark-themed 3-D trajectory figure (PNG).
-
-    Layout: left = full 3-D axes, right = three 2-D projections.
-    GT plotted before estimated so axes auto-scale to include both.
-    Equal aspect enforced on all 2-D panels.
-    """
+    """Save a dark-themed 3-D trajectory figure (PNG)."""
     est     = np.array([T[:3, 3] for T in est_poses], dtype=np.float64)
     gt_list = [T[:3, 3] for T in gt_poses if T is not None]
     gt      = np.array(gt_list, dtype=np.float64) if gt_list else None
@@ -405,7 +303,7 @@ def save_3d_trajectory(
                 R_align = result["R"]
                 t_align = result["t"]
                 est     = np.array(
-                    [s * R_align @ T[:3, 3] + t_align for T in paired_est],
+                    [s * R_align @ T[:3, 3] + t_align for T in est_poses],
                     dtype=np.float64)
                 ate_val = result["ate_rmse"]
         except Exception:
@@ -414,7 +312,6 @@ def save_3d_trajectory(
     fig = plt.figure(figsize=(16, 7))
     fig.patch.set_facecolor("#0e0e0e")
 
-    # ── left: 3-D view ────────────────────────────────────────────────────
     ax3d = fig.add_subplot(121, projection="3d")
     ax3d.set_facecolor("#0e0e0e")
     ax3d.tick_params(colors="white", labelsize=7)
@@ -422,15 +319,13 @@ def save_3d_trajectory(
         pane.fill = False
         pane.set_edgecolor("#333333")
 
-    # TUM-VI world frame: X-Y is the horizontal floor plane, Z is UP.
-    # Plot (X, Y, Z) so the 3-D vertical axis matches real height.
-    if gt is not None:
+    if show_gt and gt is not None:
         ax3d.plot(gt[:, 0], gt[:, 1], gt[:, 2],
-                  color="#A5D6A7", lw=1.0, ls="--", alpha=0.85, label="GT")
+                  color="#A5D6A7", lw=0.7, ls="--", alpha=0.45, label="GT (ref)")
         ax3d.scatter(gt[0, 0], gt[0, 1], gt[0, 2],
-                     c="lime",   s=60, zorder=5, marker="*", label="GT start")
+                     c="lime",   s=40, zorder=4, marker="*", label="GT start")
         ax3d.scatter(gt[-1, 0], gt[-1, 1], gt[-1, 2],
-                     c="gold",   s=60, zorder=5, marker="*", label="GT end")
+                     c="gold",   s=40, zorder=4, marker="*", label="GT end")
 
     ax3d.plot(est[:, 0], est[:, 1], est[:, 2],
               color="#4FC3F7", lw=1.2, label="Estimated")
@@ -446,15 +341,10 @@ def save_3d_trajectory(
     ax3d.legend(fontsize=7, facecolor="#222222", labelcolor="white",
                 loc="upper left")
 
-    # ── right: three 2-D projections ─────────────────────────────────────
     ax_xz = fig.add_subplot(322)
     ax_xy = fig.add_subplot(324)
     ax_yz = fig.add_subplot(326)
 
-    # TUM-VI world frame: X and Y are horizontal, Z is UP.
-    # Top-down = X-Y floor plan (shows walking loop).
-    # Front    = X-Z (horizontal vs height).
-    # Side     = Y-Z (horizontal vs height).
     proj_defs = [
         (ax_xz,
          est[:, 0], est[:, 1],
@@ -482,13 +372,12 @@ def save_3d_trajectory(
         ax.set_ylabel(yl, color="white", fontsize=7)
         ax.set_title(ttl, color="white", fontsize=8)
 
-        # GT first — axes scale to include it
-        if xg is not None:
-            ax.plot(xg, yg, color="#A5D6A7", lw=0.8, ls="--",
-                    alpha=0.8, label="GT")
-            ax.scatter(xg[0],  yg[0],  c="lime", s=50, zorder=6, marker="*",
+        if show_gt and xg is not None:
+            ax.plot(xg, yg, color="#A5D6A7", lw=0.6, ls="--",
+                    alpha=0.4, label="GT (ref)")
+            ax.scatter(xg[0],  yg[0],  c="lime", s=35, zorder=4, marker="*",
                        label="GT start")
-            ax.scatter(xg[-1], yg[-1], c="gold", s=50, zorder=6, marker="*",
+            ax.scatter(xg[-1], yg[-1], c="gold", s=35, zorder=4, marker="*",
                        label="GT end")
 
         ax.plot(xe, ye, color="#4FC3F7", lw=1.0, label="Est")
@@ -496,7 +385,7 @@ def save_3d_trajectory(
         ax.scatter(xe[-1], ye[-1], c="red",  s=35, zorder=7, marker="D", label="Est end")
 
         ax.set_aspect("equal", adjustable="datalim")
-        ax.legend(fontsize=6, facecolor="#222222", labelcolor="white",
+        ax.legend(fontsize=7, facecolor="#222222", labelcolor="white",
                   loc="best")
 
     ate_str = (f"  |  ATE = {ate_val:.3f} m ({align.upper()})"
@@ -506,7 +395,7 @@ def save_3d_trajectory(
 
     plt.tight_layout(rect=[0, 0, 1, 0.95])
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
-    plt.savefig(out_path, dpi=dpi, facecolor=fig.get_facecolor())
+    plt.savefig(out_path, dpi=dpi, facecolor=fig.get_facecolor(), bbox_inches="tight")
     plt.close()
     print(f"  Saved 3D trajectory → {out_path}")
 
@@ -522,16 +411,7 @@ def save_comparison_3d(
     mono_drift:   float = float("nan"),
     stereo_drift: float = float("nan"),
 ) -> None:
-    """
-    Dark-themed 3-D figure comparing GT, Sim3-aligned mono VO, and
-    SE3-aligned stereo VO in a single plot.  Required by project spec
-    Section VI: "Visualize trajectories in 3D plots comparing VO
-    (up-to-scale), stereo VO (metric), and ground truth."
-
-    full_gt=True  → Sim3/SE3 alignment + ATE labels   (room2)
-    full_gt=False → trajectories passed in are already start-aligned;
-                    skip alignment, show drift labels, mark GT start/end
-    """
+    """Dark-themed 3-D figure comparing GT, Sim3-aligned mono VO, and SE3-aligned stereo VO."""
     from evaluation.metrics import align_and_evaluate
 
     gt_T = [T for T in gt_poses if T is not None]
@@ -545,16 +425,16 @@ def save_comparison_3d(
                     paired_est.append(poses[i])
                     paired_gt.append(g)
             if len(paired_gt) < 10:
-                return np.array([T[:3, 3] for T in paired_est], dtype=np.float64), float("nan"), None
+                return np.array([T[:3, 3] for T in poses], dtype=np.float64), float("nan"), None
             try:
                 res = align_and_evaluate(paired_est, paired_gt, align=mode)
-                s   = res.get("s", 1.0)
+                s    = res.get("s", 1.0)
                 R, t = res["R"], res["t"]
-                arr = np.array([s * R @ T[:3, 3] + t for T in paired_est], dtype=np.float64)
+                arr  = np.array([s * R @ T[:3, 3] + t for T in poses], dtype=np.float64)
                 return arr, res["ate_rmse"], res.get("errors")
             except Exception:
                 pass
-            return np.array([T[:3, 3] for T in paired_est], dtype=np.float64), float("nan"), None
+            return np.array([T[:3, 3] for T in poses], dtype=np.float64), float("nan"), None
 
         mono_arr,   mono_ate,   mono_errors   = _align(mono_poses,   "sim3")
         stereo_arr, stereo_ate, stereo_errors = _align(stereo_poses, "se3")
@@ -574,10 +454,9 @@ def save_comparison_3d(
         title_str  = (f"Mono vs Stereo VO — {seq_name}  |  "
                       f"mono drift={_dm}  stereo drift={_ds}")
 
-    fig = plt.figure(figsize=(18, 8))
+    fig = plt.figure(figsize=(10, 4.8))
     fig.patch.set_facecolor("#0e0e0e")
 
-    # ── 3-D view ──────────────────────────────────────────────────────────
     ax3 = fig.add_subplot(131, projection="3d")
     ax3.set_facecolor("#0e0e0e")
     ax3.tick_params(colors="white", labelsize=7)
@@ -593,25 +472,24 @@ def save_comparison_3d(
         ax3.scatter(float(gt[-1, 0]), float(gt[-1, 1]), float(gt[-1, 2]),
                     c="gold", s=80, zorder=7, marker="*", label="GT end")
     ax3.plot(mono_arr[:, 0],   mono_arr[:, 1],   mono_arr[:, 2],
-             color="#4FC3F7", lw=1.0, label=mono_lbl)
+             color="#4FC3F7", lw=1.0, label="Mono VO")
     ax3.scatter(mono_arr[0, 0],  mono_arr[0, 1],  mono_arr[0, 2],
-                c="cyan",   s=50, zorder=6, marker="o", label="Mono est start")
+                c="cyan",   s=50, zorder=6, marker="o", label="Mono start")
     ax3.scatter(mono_arr[-1, 0], mono_arr[-1, 1], mono_arr[-1, 2],
-                c="cyan",   s=50, zorder=6, marker="D", label="Mono est end")
+                c="cyan",   s=50, zorder=6, marker="D", label="Mono end")
     ax3.plot(stereo_arr[:, 0], stereo_arr[:, 1], stereo_arr[:, 2],
-             color="#EF9A9A", lw=1.0, label=stereo_lbl)
+             color="#EF9A9A", lw=1.0, label="Stereo VO")
     ax3.scatter(stereo_arr[0, 0],  stereo_arr[0, 1],  stereo_arr[0, 2],
-                c="blue", s=50, zorder=6, marker="o", label="Stereo est start")
+                c="blue", s=50, zorder=6, marker="o", label="Stereo start")
     ax3.scatter(stereo_arr[-1, 0], stereo_arr[-1, 1], stereo_arr[-1, 2],
-                c="red",  s=50, zorder=6, marker="D", label="Stereo est end")
+                c="red",  s=50, zorder=6, marker="D", label="Stereo end")
     ax3.set_xlabel("X [m]", color="white", fontsize=8)
     ax3.set_ylabel("Y [m]", color="white", fontsize=8)
     ax3.set_zlabel("Z [m] (up)", color="white", fontsize=8)
     ax3.set_title("3-D view", color="white", fontsize=9)
     ax3.legend(fontsize=7, facecolor="#222222", labelcolor="white",
-               loc="upper left")
+               loc="upper left", bbox_to_anchor=(-0.05, 1.12))
 
-    # ── top-down x-y ──────────────────────────────────────────────────────
     ax_xy = fig.add_subplot(132)
     ax_xy.set_facecolor("#111111")
     ax_xy.tick_params(colors="white", labelsize=7)
@@ -655,9 +533,6 @@ def save_comparison_3d(
                           _xy_all[:, 1].max() - _xy_all[:, 1].min())
         ax_xy.set_xlim(_xy_all[:, 0].min() - _pad, _xy_all[:, 0].max() + _pad)
         ax_xy.set_ylim(_xy_all[:, 1].min() - _pad, _xy_all[:, 1].max() + _pad)
-    ax_xy.legend(fontsize=7, facecolor="#222222", labelcolor="white")
-
-    # ── ATE over time (full_gt) / stereo height over time (drift) ────────
     ax_z = fig.add_subplot(133)
     ax_z.set_facecolor("#111111")
     ax_z.tick_params(colors="white", labelsize=7)
@@ -672,7 +547,6 @@ def save_comparison_3d(
         ax_z.set_ylim(bottom=0)
         ax_z.set_title("ATE over time", color="white", fontsize=9)
     else:
-        # Mono has no metric scale → only show stereo z (meaningful)
         ax_z.plot(stereo_arr[:, 2], color="#EF9A9A", lw=0.9, label="Stereo z")
         ax_z.axhline(stereo_arr[0, 2], color="#A5D6A7", lw=0.7, ls="--",
                      alpha=0.7, label=f"start z={stereo_arr[0,2]:.2f}m")
@@ -684,6 +558,6 @@ def save_comparison_3d(
     fig.suptitle(title_str, color="white", fontsize=11, fontweight="bold")
     plt.tight_layout(rect=[0, 0, 1, 0.94])
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
-    plt.savefig(out_path, dpi=dpi, facecolor=fig.get_facecolor())
+    plt.savefig(out_path, dpi=dpi, facecolor=fig.get_facecolor(), bbox_inches="tight")
     plt.close()
     print(f"  Saved comparison 3D → {out_path}")

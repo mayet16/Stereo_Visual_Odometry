@@ -9,5 +9,5 @@ corridor3,stereo,ON,production,15,6.4716,drift
 corridor3,stereo,OFF,ablation,99,19.631,drift
 outdoors5,mono,ON,production,2,16.5157,drift
 outdoors5,mono,OFF,ablation,74,23.5546,drift
-outdoors5,stereo,OFF,production,15,70.2814,drift
-outdoors5,stereo,ON,ablation,11,178.1891,drift
+outdoors5,stereo,OFF,production,12,33.0928,drift
+outdoors5,stereo,ON,ablation,13,201.4501,drift

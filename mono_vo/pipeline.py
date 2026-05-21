@@ -1,23 +1,3 @@
-"""
-Monocular VO — keyframe-based pipeline for TUM VI.
-
-Root cause of previous scale collapse:
-  _extend_map was called ~every 2 frames using consecutive-frame pairs
-  (baseline ~5 cm, scene depth ~2 m → 1.4° angle).  At that angle,
-  triangulation noise inflates depths, making PnP under-estimate
-  translation.  After a few hundred frames the entire map was corrupt.
-
-Fix:
-  Map extension exclusively from KF→current pairs.
-  A new keyframe is created when the baseline/depth ratio exceeds a
-  threshold, guaranteeing a useful triangulation angle (≥ 3°).
-  Consecutive-frame triangulation is completely removed.
-
-Virtual-depth (VD) reinit uses the actual median scene depth from the
-current map, not the fixed expected_depth, so scale is preserved during
-pure-rotation phases.
-"""
-
 import numpy as np
 import cv2
 from dataclasses import dataclass, field
@@ -34,39 +14,29 @@ from utils.math_utils        import Rt_to_T, invert_T, cam_from_world
 @dataclass
 class MonoVOConfig:
     feature:              FeatureConfig = field(default_factory=FeatureConfig)
-    # ── initialisation ──────────────────────────────────────────────────────
     min_parallax_px:      float = 8.0
     max_parallax_px:      float = 40.0
-    expected_depth:       float = 2.0    # scene depth used to set world scale [m]
-    # ── PnP ────────────────────────────────────────────────────────────────
+    expected_depth:       float = 2.0   # scene depth for world scale [m]
     pnp_min_inliers:      int   = 12
     pnp_ransac_th:        float = 6.0
     reproj_thresh:        float = 4.0
     use_ba:               bool  = True
-    # ── map ────────────────────────────────────────────────────────────────
     max_map_pts:          int   = 600
     min_tracked_pts:      int   = 50
-    # ── keyframe ───────────────────────────────────────────────────────────
-    kf_min_parallax_px:   float = 20.0   # proxy parallax to trigger new KF
-    kf_max_parallax_px:   float = 60.0   # force KF even without triangulation
-    kf_min_baseline_ratio:float = 0.05   # min baseline/depth for triangulation
-    # ── motion model ───────────────────────────────────────────────────────
-    max_velocity:         float = 0.5    # max per-frame translation [m]
-    max_cvm_frames:       int   = 3      # CVM extrapolation limit
-    # ── misc ───────────────────────────────────────────────────────────────
-    # Percentile of the depth-filtered ORB points used for scale estimation.
-    # Lower value → picks nearer points → larger scale (good for room2).
-    # Higher value → picks deeper points → smaller scale (good for long corridors
-    # and outdoors where a compressed trajectory reduces expressed drift).
+    kf_min_parallax_px:   float = 20.0
+    kf_max_parallax_px:   float = 60.0
+    kf_min_baseline_ratio:float = 0.05  # min baseline/depth for reliable triangulation angle
+    max_velocity:         float = 0.5
+    max_cvm_frames:       int   = 3
+    # Percentile used for scale estimation from init depth distribution.
+    # Lower → nearer points → larger scale (room2).
+    # Higher → deeper points → smaller scale, less expressed drift (outdoors).
     depth_percentile:     int   = 25
-    use_clahe:            bool  = False  # CLAHE contrast enhancement before tracking
-    # E-matrix reinit has cheirality ambiguity for 180° rotations — disable
-    # for corridor-like sequences where the camera turns around.
+    use_clahe:            bool  = False
+    # E-reinit has cheirality ambiguity at 180° turns — disable for corridor.
     use_e_reinit:         bool  = True
-    # Minimum camera-frame z accepted by _get_scene_depth().  Raise for
-    # rotation-heavy close-range sequences (room2) to exclude very near VD
-    # points that are hard to re-track under rotation; keep low (0.1m) for
-    # translation-dominant sequences (corridor3) for accurate depth estimation.
+    # Lower bound for depth used in _get_scene_depth(); raise for close-range
+    # rotation-heavy sequences to exclude near VD points hard to re-track.
     scene_depth_lo_m:     float = 0.1
     verbose:              bool  = False
 
@@ -82,7 +52,6 @@ class MonoVO:
 
         self.tracker = FeatureTracker(cfg.feature)
 
-        # ── public counters ───────────────────────────────────────────────
         self._initialised  = False
         self._frame_id     = 0
         self.n_failures    = 0
@@ -92,46 +61,37 @@ class MonoVO:
         self.n_kf_updates  = 0
         self.n_vd_reinits  = 0
         self.n_e_reinits   = 0
-        self.inlier_ratios: List[float] = []  # PnP inlier ratio per frame (dynamic sensitivity)
+        self.inlier_ratios: List[float] = []
         self.cur_pts: Optional[np.ndarray] = None
 
-        # ── init state ────────────────────────────────────────────────────
         self._init_img:  Optional[np.ndarray] = None
         self._init_pts:  Optional[np.ndarray] = None
 
-        # ── map ───────────────────────────────────────────────────────────
-        self._map3d: Optional[np.ndarray] = None  # (N,3) world frame
-        self._map2d: Optional[np.ndarray] = None  # (N,2) current-frame pixels
+        self._map3d: Optional[np.ndarray] = None
+        self._map2d: Optional[np.ndarray] = None
 
-        # ── keyframe ─────────────────────────────────────────────────────
         self._kf_img: Optional[np.ndarray] = None
-        self._kf_T:   Optional[np.ndarray] = None  # T_wc of last keyframe
+        self._kf_T:   Optional[np.ndarray] = None
 
-        # ── pose ─────────────────────────────────────────────────────────
         self._T_cur  = np.eye(4, dtype=np.float64)
         self._T_prev = np.eye(4, dtype=np.float64)
         self._prev_img: Optional[np.ndarray] = None
 
-        # ── constant-velocity model ───────────────────────────────────────
         self._last_delta_T:   np.ndarray = np.eye(4, dtype=np.float64)
         self._has_delta:      bool       = False
         self._n_consec_fails: int        = 0
 
-        # ── E-matrix re-init anchor ───────────────────────────────────────
         self._anchor_img:    Optional[np.ndarray] = None
-        self._anchor_pts:    Optional[np.ndarray] = None   # detect_grid features for E-matrix
-        self._anchor_map2d:  Optional[np.ndarray] = None   # map 2D positions for PnP primary
-        self._anchor_map3d:  Optional[np.ndarray] = None   # map 3D world points for PnP primary
+        self._anchor_pts:    Optional[np.ndarray] = None
+        self._anchor_map2d:  Optional[np.ndarray] = None
+        self._anchor_map3d:  Optional[np.ndarray] = None
         self._anchor_T:      Optional[np.ndarray] = None
         self._anchor_active: bool                 = False
 
-        # ── trajectory ────────────────────────────────────────────────────
         self._timestamps: List[float]      = []
         self._poses:      List[np.ndarray] = []
 
         self._clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-
-    # ── public API ──────────────────────────────────────────────────────────
 
     def process(self, img: np.ndarray,
                 timestamp: float = 0.0) -> Optional[np.ndarray]:
@@ -153,16 +113,13 @@ class MonoVO:
     def current_pose(self) -> np.ndarray:
         return self._T_cur.copy()
 
-    # ── initialisation ──────────────────────────────────────────────────────
-
     def _try_init(self, img: np.ndarray, ts: float) -> Optional[np.ndarray]:
         if self._init_img is None:
             self._init_img = img
-            self._init_pts = self.tracker.detect_grid(img)   # for parallax gate only
+            self._init_pts = self.tracker.detect_grid(img)  # for parallax gate
             self._prev_img = img
             return None
 
-        # Parallax gate via FAST+LK (cheap flow estimate to skip near-rotation frames)
         pts_cur_lk, ok = self._lk_track(self._init_img, img, self._init_pts)
         pts0_lk = self._init_pts[ok]
 
@@ -183,7 +140,6 @@ class MonoVO:
             self._prev_img = img
             return None
 
-        # ── Spec init: A) ORB detect, B) match + ratio test, C) E-matrix RANSAC ──
         pts0_orb, pts_cur_orb = self.tracker.detect_and_match(self._init_img, img)
         if len(pts0_orb) >= 20:
             E, emask = estimate_essential(pts0_orb, pts_cur_orb, self.K)
@@ -195,15 +151,11 @@ class MonoVO:
                         np.eye(3), np.zeros(3), R_e, t_e,
                         pts0_orb[emask], pts_cur_orb[emask], self.K,
                     )
-                    # Keep ALL valid points for the map — full map size preserves
-                    # LK tracking quality.  Compute scale separately from a
-                    # depth-filtered 25th-percentile to avoid far-wall ORB bias.
                     valid = ((pts3d_unit[:, 2] > 0.01) &
                              np.all(np.isfinite(pts3d_unit), axis=1))
                     if valid.sum() >= 15:
                         geom_depth_unit = float(self.K[0, 0]) / max(flow, 1.0)
                         in_range = valid & (pts3d_unit[:, 2] < 5.0 * geom_depth_unit)
-                        # Fall back to full valid set if filter leaves too few pts
                         scale_pts  = in_range if in_range.sum() >= 8 else valid
                         depth_pct  = float(np.percentile(
                             pts3d_unit[scale_pts, 2], self.cfg.depth_percentile))
@@ -230,55 +182,10 @@ class MonoVO:
                         self._record(ts)
                         return self._T_cur.copy()
 
-        # ORB+E init failed this frame — wait for better baseline / more matches.
         self._prev_img = img
         return None
 
-        # ── VD PnP fallback (commented out — using spec-only ORB+E init) ────────
-        # d0 = self.cfg.expected_depth
-        # cx, cy = float(self.K[0, 2]), float(self.K[1, 2])
-        # fx, fy = float(self.K[0, 0]), float(self.K[1, 1])
-        #
-        # pts3d_world = np.zeros((len(pts0_lk), 3), dtype=np.float64)
-        # for i, (u, v) in enumerate(pts0_lk):
-        #     ang   = float(np.sqrt(((u - cx) / fx)**2 + ((v - cy) / fy)**2))
-        #     depth = d0 * (1.0 + 0.1 * ang)
-        #     pts3d_world[i] = [(u - cx) / fx * depth,
-        #                       (v - cy) / fy * depth,
-        #                       depth]
-        #
-        # R_init, t_init, inlier_mask = pnp_ransac(
-        #     pts3d_world, pts_cur_lk.astype(np.float32), self.K, self.dist,
-        #     min_inliers=20, ransac_th=self.cfg.pnp_ransac_th,
-        # )
-        # if R_init is None:
-        #     self._prev_img = img
-        #     return None
-        #
-        # T_cw     = Rt_to_T(R_init, t_init)
-        # T_wc_cur = invert_T(T_cw)
-        # n_in     = int(inlier_mask.sum())
-        # t_norm   = float(np.linalg.norm(T_wc_cur[:3, 3]))
-        #
-        # print(f"[MonoVO] VD init (fallback)  d0={d0:.2f}m  n={n_in}  "
-        #       f"flow={flow:.1f}px  t={t_norm:.3f}m")
-        #
-        # self._T_prev      = np.eye(4, dtype=np.float64)
-        # self._T_cur       = T_wc_cur
-        # self._map3d       = pts3d_world[inlier_mask]
-        # self._map2d       = pts_cur_lk[inlier_mask].astype(np.float32)
-        # self._kf_img      = self._init_img.copy()
-        # self._kf_T        = np.eye(4, dtype=np.float64)
-        # self._prev_img    = img
-        # self._initialised = True
-        # self._record(ts)
-        # return self._T_cur.copy()
-
-    # ── per-frame tracking ──────────────────────────────────────────────────
-
     def _track(self, img: np.ndarray, ts: float) -> Optional[np.ndarray]:
-
-        # 1. LK tracking: prev → cur
         map2d_t, ok = self._lk_track(self._prev_img, img, self._map2d)
         map3d_t     = self._map3d[ok]
         n_tracked   = ok.sum()
@@ -291,7 +198,6 @@ class MonoVO:
 
         lk_ok = n_tracked >= self.cfg.pnp_min_inliers
 
-        # 2. PnP
         R, t, inlier_mask = None, None, None
         if lk_ok:
             R, t, inlier_mask = pnp_ransac(
@@ -300,7 +206,6 @@ class MonoVO:
                 ransac_th=self.cfg.pnp_ransac_th,
             )
 
-        # 3. Failure path
         if R is None:
             if not lk_ok:
                 self.n_lk_fails += 1
@@ -312,9 +217,9 @@ class MonoVO:
 
             if self._n_consec_fails == 1:
                 self._anchor_img    = self._prev_img.copy()
-                self._anchor_pts    = self.tracker.detect_grid(self._prev_img)  # E-matrix
-                self._anchor_map2d  = self._map2d.copy()   # PnP primary (aligned w/ map3d)
-                self._anchor_map3d  = self._map3d.copy()   # PnP primary (world-frame 3D)
+                self._anchor_pts    = self.tracker.detect_grid(self._prev_img)
+                self._anchor_map2d  = self._map2d.copy()
+                self._anchor_map3d  = self._map3d.copy()
                 self._anchor_T      = self._T_cur.copy()
                 self._anchor_active = True
 
@@ -338,7 +243,6 @@ class MonoVO:
             self._record(ts)
             return self._T_cur.copy()
 
-        # 4. Optional BA
         if self.cfg.use_ba and inlier_mask.sum() >= 6:
             R, t = refine_pose_ba(
                 R, t,
@@ -350,7 +254,6 @@ class MonoVO:
         T_cw = Rt_to_T(R, t)
         T_wc = invert_T(T_cw)
 
-        # 5. Velocity guard
         vel = float(np.linalg.norm(T_wc[:3, 3] - self._T_cur[:3, 3]))
         if vel > self.cfg.max_velocity:
             self.inlier_ratios.append(inlier_mask.sum() / max(n_tracked, 1))
@@ -369,7 +272,6 @@ class MonoVO:
             self._record(ts)
             return self._T_cur.copy()
 
-        # 6. Accept pose
         self._T_prev = self._T_cur.copy()
         self._T_cur  = T_wc
         self.inlier_ratios.append(inlier_mask.sum() / max(n_tracked, 1))
@@ -379,7 +281,6 @@ class MonoVO:
         self._n_consec_fails = 0
         self._anchor_active  = False
 
-        # 7. Reprojection filter on PnP inliers
         pts3d_in = map3d_t[inlier_mask]
         pts2d_in = map2d_t[inlier_mask]
         R_cw, t_cw = cam_from_world(self._T_cur)
@@ -392,17 +293,12 @@ class MonoVO:
             self._map3d = pts3d_in
             self._map2d = pts2d_in
 
-        # 8. Refresh map2d (project from accepted pose → eliminates LK drift)
         self._refresh_map2d(img)
-
-        # 9. Keyframe update + map extension from KF baseline
         self._maybe_update_kf(img)
 
-        # 10. VD augment if map still sparse after KF update
         if len(self._map3d) < self.cfg.min_tracked_pts:
             self._vd_augment(img)
 
-        # 11. Cap map
         if len(self._map3d) > self.cfg.max_map_pts:
             idx = np.random.choice(len(self._map3d),
                                    self.cfg.max_map_pts, replace=False)
@@ -413,37 +309,22 @@ class MonoVO:
         self._record(ts)
         return self._T_cur.copy()
 
-    # ── keyframe update ─────────────────────────────────────────────────────
-
     def _maybe_update_kf(self, img: np.ndarray) -> None:
-        """
-        Create a new keyframe when the accumulated baseline from the last
-        keyframe is large enough for reliable triangulation.
-
-        Triangulated points come exclusively from KF→current pairs to
-        guarantee a useful triangulation angle and consistent map scale.
-        """
+        """Trigger new keyframe on translation-parallax; triangulate from KF→current."""
         if self._kf_T is None:
             return
 
-        # Baseline from last KF
-        baseline = float(np.linalg.norm(
-            self._T_cur[:3, 3] - self._kf_T[:3, 3]))
-
-        # Median scene depth (camera-frame z of current map)
+        baseline  = float(np.linalg.norm(self._T_cur[:3, 3] - self._kf_T[:3, 3]))
         med_depth = self._get_scene_depth()
-
         focal     = float(self.K[0, 0])
         approx_px = baseline / max(med_depth, 0.01) * focal
 
-        # Trigger only on sufficient translation-parallax — NOT on map size.
-        # Map density is managed separately by _vd_augment so that map_low
-        # alone never resets kf_img to a near-identical frame (which would
-        # give 1-frame baseline and reject every triangulated point).
+        # Trigger on translation-parallax only — NOT on map size.
+        # _vd_augment handles density so a sparse map never forces a
+        # near-zero-baseline KF that would reject all triangulated points.
         if approx_px < self.cfg.kf_min_parallax_px:
             return
 
-        # Attempt triangulation from KF→current
         new3d, new2d_cur = self._triangulate_from_kf(img, baseline, med_depth)
 
         # Promote current frame to keyframe
@@ -454,7 +335,6 @@ class MonoVO:
         if len(new3d) == 0:
             return
 
-        # Augment map with correctly-triangulated points
         self._map3d = np.vstack([self._map3d, new3d])
         self._map2d = np.vstack([self._map2d, new2d_cur])
 
@@ -468,19 +348,11 @@ class MonoVO:
         baseline: float,
         med_depth: float,
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Detect FAST corners in current frame, track back to kf_img,
-        triangulate from the KF pose to the current pose.
-
-        Only points whose baseline/depth ratio exceeds kf_min_baseline_ratio
-        are returned — this ensures the triangulation angle is large enough
-        for the depth to be reliable.
-        """
+        """Triangulate current-frame corners against last keyframe."""
         new2d_cur = self.tracker.detect_grid(img)
         if len(new2d_cur) < 5:
             return np.empty((0, 3), np.float64), np.empty((0, 2), np.float32)
 
-        # Track detected corners back to the KF image
         new2d_kf, ok = self._lk_track(img, self._kf_img, new2d_cur, extra_levels=1)
         if ok.sum() < 5:
             return np.empty((0, 3), np.float64), np.empty((0, 2), np.float32)
@@ -500,8 +372,6 @@ class MonoVO:
         depths_cur  = pts_cam_cur[:, 2]
         depths_kf   = pts_cam_kf[:, 2]
         dist_world  = np.linalg.norm(pts3d - self._T_cur[:3, 3], axis=1)
-
-        # Baseline/depth ratio filter: ensures triangulation angle is useful
         angle_ratio = baseline / np.maximum(depths_cur, 1e-6)
 
         good = (
@@ -516,7 +386,6 @@ class MonoVO:
         if good.sum() == 0:
             return np.empty((0, 3), np.float64), np.empty((0, 2), np.float32)
 
-        # Reprojection filter from current camera
         R_cw, t_cw = cam_from_world(self._T_cur)
         pts3d_g, pts2d_g = self._filter_reproj(
             pts3d[good], new2d_cur_ok[good],
@@ -525,25 +394,17 @@ class MonoVO:
         )
         return pts3d_g, pts2d_g
 
-    # ── E-matrix re-initialisation ───────────────────────────────────────────
-
     def _try_reinit(self, img: np.ndarray, ts: float) -> bool:
-        """
-        Recover pose after consecutive tracking failures.
+        """Recover pose after consecutive tracking failures.
 
-        Primary path: direct 3D-PnP using _anchor_map2d/_anchor_map3d (world-
-        frame 3D points tracked via LK into the current frame).  No cheirality
-        ambiguity — correct for any rotation including 180° corridor turns.
-
-        Fallback: E-matrix + scene-depth scale snap using _anchor_pts (detect_
-        grid features, ~300 pts).  Disabled via use_e_reinit=False for sequences
-        with large rotations (E-matrix cheirality picks wrong decomposition).
+        Primary: 3D-PnP from anchor map points (no cheirality ambiguity).
+        Fallback: E-matrix + scene-depth scale snap (disabled when use_e_reinit=False
+        because E-matrix cheirality is wrong for 180° rotations).
         """
         if (self._anchor_img is None
                 or self._anchor_T  is None):
             return False
 
-        # ── Primary: direct 3D-PnP ───────────────────────────────────────────
         if (self._anchor_map2d is not None
                 and self._anchor_map3d is not None
                 and len(self._anchor_map2d) >= 8):
@@ -578,15 +439,12 @@ class MonoVO:
                                   f"n={inl_d.sum()}")
                         return True
 
-        # ── Fallback: E-matrix + scene-depth scale snap ───────────────────────
         if not self.cfg.use_e_reinit:
             return False
 
-        # ORB detect + match between anchor and current (spec: descriptor matching)
         pts0, pts_cur = self.tracker.detect_and_match(self._anchor_img, img)
 
         if len(pts0) < 20:
-            # LK fallback: use stored anchor_pts if ORB yields too few matches
             if (self._anchor_pts is None or len(self._anchor_pts) < 20):
                 return False
             pts_cur_lk, ok = self._lk_track(
@@ -656,17 +514,11 @@ class MonoVO:
                   f"flow={flow:.1f}px  n={valid.sum()}")
         return True
 
-    # ── virtual-depth reinit ─────────────────────────────────────────────────
-
     def _vd_reinit(self, img: np.ndarray,
                    force_depth: Optional[float] = None) -> bool:
-        """
-        Back-project fresh FAST corners to the current median scene depth.
-        Uses the actual depth from existing map points (not expected_depth)
-        to preserve world scale.  Pass force_depth to override the scene
-        depth estimate (used by the scale-collapse guard to break the
-        feedback loop where a collapsed map returns a collapsed depth).
-        """
+        """Back-project FAST corners to median scene depth to rebuild the map.
+        Uses actual map depth (not expected_depth) to preserve world scale.
+        force_depth bypasses the scene depth estimate when scale has collapsed."""
         new2d = self.tracker.detect_grid(img)
         if len(new2d) < self.cfg.pnp_min_inliers:
             return False
@@ -690,10 +542,8 @@ class MonoVO:
 
         self._map3d = pts3d_world
         self._map2d = new2d.astype(np.float32)
-        # Reset keyframe to the current frame.  Without this, _maybe_update_kf
-        # would triangulate from the stale (pre-collapse) KF pose against the
-        # freshly-scaled current pose — producing pts with wrong depths that
-        # immediately re-collapse the scale.
+        # Reset KF to current frame: a stale pre-collapse KF pose would produce
+        # wrong triangulation depths against the fresh pose, re-collapsing scale.
         self._kf_img = img.copy()
         self._kf_T   = self._T_cur.copy()
         self.n_vd_reinits += 1
@@ -701,15 +551,7 @@ class MonoVO:
         return True
 
     def _vd_augment(self, img: np.ndarray) -> None:
-        """
-        Add virtual-depth 3D points to a sparse map without replacing it.
-
-        Called during normal (non-failure) tracking whenever the map falls
-        below min_tracked_pts.  Uses the actual median scene depth from the
-        existing map so world scale is preserved.  This is NOT consecutive-frame
-        triangulation — depths come from back-projection at the current scene
-        depth, not from geometry, so there is no small-baseline depth inflation.
-        """
+        """Augment a sparse map with virtual-depth points at current scene depth."""
         d0 = self._get_scene_depth()
         new2d = self.tracker.detect_grid(img)
         if len(new2d) == 0:
@@ -740,10 +582,8 @@ class MonoVO:
         self._log(f"[{self._frame_id:04d}] VD-augment +{len(new2d)} pts "
                   f"map={len(self._map3d)}  d0={d0:.2f}m")
 
-    # ── map2d refresh ────────────────────────────────────────────────────────
-
     def _refresh_map2d(self, img: np.ndarray) -> None:
-        """Project _map3d to current pose → replace _map2d with exact pixel positions."""
+        """Reproject map3d to current pose to replace accumulated LK-drift positions."""
         if self._map3d is None or len(self._map3d) == 0:
             return
         h, w = img.shape[:2]
@@ -766,10 +606,8 @@ class MonoVO:
         self._map3d = self._map3d[in_img]
         self._map2d = proj[in_img]
 
-    # ── helpers ──────────────────────────────────────────────────────────────
-
     def _get_scene_depth(self) -> float:
-        """Median camera-frame z of current map points."""
+        """Median camera-frame z of current map points, clamped to valid range."""
         if self._map3d is not None and len(self._map3d) > 0:
             R_cw, t_cw = cam_from_world(self._T_cur)
             pts_cam = (R_cw @ self._map3d.T).T + t_cw

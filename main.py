@@ -1,20 +1,6 @@
-"""
-main.py  —  Stereo_VO project entry point
-==========================================
-Runs monocular VO + stereo VO on all three TUM VI sequences.
-
-New in this version:
-  - LiveVisualizer: real-time side-by-side display (frame + trajectory)
-    during both mono and stereo VO runs.
-  - save_3d_trajectory: dark-themed 3-D trajectory figure saved after
-    each sequence (mono_traj_3d.png / stereo_traj_3d.png).
-  - DEBUG prints removed — stereo config is read correctly.
-  - show_frames() call removed (caused Qt thread warnings).
-
-Usage:
-  python main.py                        # runs all sequences with live display
-  SHOW_VIS=0 python main.py             # headless — saves PNGs only
-"""
+# Usage:
+#   python main.py               # runs all sequences with live display
+#   SHOW_VIS=0 python main.py    # headless — saves PNGs only
 
 import csv
 import os
@@ -41,38 +27,26 @@ np.random.seed(42)
 print(f"[Reproducibility] np.random.seed(42)  |  Python {__import__('sys').version.split()[0]}  |  NumPy {np.__version__}")
 
 _SHOW = os.environ.get("SHOW_VIS", "1") != "0"
-_SHOW = 0
+
 SEQUENCES = [
     "config/tumvi_room2.yaml",
     "config/tumvi_corridor3.yaml",
     "config/tumvi_outdoors5.yaml",
 ]
 
-# room2 has full GT → ATE.  corridor3/outdoors5 → start-end drift only.
 FULL_GT = {"room2"}
 
-_FEAT_STEREO = FeatureConfig(
-    method       = "orb",
-    max_features = 3000,
-    lk_win_size  = 21,
-    lk_max_level = 3,
-    grid_rows    = 5,
-    grid_cols    = 5,
-)
-
-# Mono config: same grid as stereo but larger LK window + extra pyramid level
-# to better handle the rotation-heavy handheld motion in TUM-VI.
+# Larger LK window + extra pyramid level for TUM-VI's rotation-heavy handheld motion.
 _FEAT_MONO = FeatureConfig(
     method         = "orb",
     max_features   = 3000,
-    lk_win_size    = 25,   # larger window handles bigger inter-frame motion
-    lk_max_level   = 4,    # extra pyramid level for large rotations
+    lk_win_size    = 25,
+    lk_max_level   = 4,
     grid_rows      = 5,
     grid_cols      = 5,
-    fast_threshold = 15,   # lower threshold → more keypoints per cell
+    fast_threshold = 15,
 )
 
-_FEAT = _FEAT_STEREO   # keep backward-compat alias for stereo configs
 
 MONO_CONFIGS = {
     "room2": MonoVOConfig(
@@ -82,7 +56,7 @@ MONO_CONFIGS = {
         min_parallax_px       = 20.0,
         max_parallax_px       = 40.0,
         expected_depth        = 2.0,
-        scene_depth_lo_m      = 0.6,    # exclude <0.6m VD pts (hard to track under rotation)
+        scene_depth_lo_m      = 0.6,    # exclude close VD pts hard to track under rotation
         pnp_min_inliers       = 12,
         pnp_ransac_th         = 6.0,
         reproj_thresh         = 4.0,
@@ -90,27 +64,26 @@ MONO_CONFIGS = {
         max_velocity          = 0.5,
         kf_min_parallax_px    = 15.0,
         kf_max_parallax_px    = 40.0,
-        kf_min_baseline_ratio = 10.0,   # disable KF triangulation for room2:
-                                        # any angle causes scale collapse for
-                                        # this rotation-dominant sequence
-        use_clahe             = True,   # more/better features improve PnP
-                                        # conditioning; init t=0.045m vs 0.013m
+        kf_min_baseline_ratio = 10.0,   # large threshold disables KF triangulation:
+                                        # any KF angle causes scale collapse on this
+                                        # rotation-dominant sequence
+        use_clahe             = True,   # improves PnP conditioning; init t=0.045m vs 0.013m
         max_cvm_frames        = 3,
         verbose               = False,
     ),
     "corridor3": MonoVOConfig(
         feature               = _FEAT_MONO,
-        min_tracked_pts       = 80,     # keep map denser → fewer VD depletions
+        min_tracked_pts       = 80,
         max_map_pts           = 600,
         min_parallax_px       = 15.0,
         max_parallax_px       = 60.0,
-        expected_depth        = 5.0,    # corridor > room; raises d_hi clip to 12.5m
+        expected_depth        = 5.0,
         pnp_min_inliers       = 12,
         pnp_ransac_th         = 6.0,
         reproj_thresh         = 4.0,
         use_ba                = True,
         max_velocity          = 1.0,
-        kf_min_parallax_px    = 10.0,   # more frequent KF → more real-geometry pts
+        kf_min_parallax_px    = 10.0,
         kf_max_parallax_px    = 80.0,
         kf_min_baseline_ratio = 0.03,
         max_cvm_frames        = 3,
@@ -126,13 +99,13 @@ MONO_CONFIGS = {
         min_parallax_px       = 15.0,
         max_parallax_px       = 80.0,
         expected_depth        = 5.0,
-        scene_depth_lo_m      = 1.0,    # exclude ground/nearby (<1m) from VD depth estimate
+        scene_depth_lo_m      = 1.0,    # exclude ground/nearby from VD depth estimate
         pnp_min_inliers       = 12,
         pnp_ransac_th         = 6.0,
         reproj_thresh         = 4.0,
         use_ba                = True,
         max_velocity          = 2.0,
-        kf_min_parallax_px    = 12.0,   # was 15 — trigger KF updates more often for fast motion
+        kf_min_parallax_px    = 12.0,
         kf_max_parallax_px    = 100.0,
         kf_min_baseline_ratio = 0.03,
         max_cvm_frames        = 3,
@@ -142,9 +115,19 @@ MONO_CONFIGS = {
     ),
 }
 
+_FEAT_STEREO = FeatureConfig(
+    method       = "orb",
+    max_features = 3000,
+    lk_win_size  = 21,
+    lk_max_level = 3,
+    grid_rows    = 5,
+    grid_cols    = 5,
+)
+
+
 STEREO_CONFIGS = {
     "room2": StereoVOConfig(
-        feature         = _FEAT,
+        feature         = _FEAT_STEREO,
         disparity       = DisparityConfig(
             num_disparities = 64,
             block_size      = 11,
@@ -160,12 +143,11 @@ STEREO_CONFIGS = {
         reproj_thresh   = 2.0,
         use_ba          = True,
         max_velocity    = 0.5,
-        use_clahe       = True,   # indoor structured scene: CLAHE safe for SGBM,
-                                  # reduces failures 18→3 and ATE 0.785→0.439m
+        use_clahe       = True,   # CLAHE reduces failures 18→3 and ATE 0.785→0.439m on room2
         verbose         = False,
     ),
     "corridor3": StereoVOConfig(
-        feature         = _FEAT,
+        feature         = _FEAT_STEREO,
         disparity       = DisparityConfig(
             num_disparities = 64,
             block_size      = 21,
@@ -175,23 +157,23 @@ STEREO_CONFIGS = {
             patch_radius    = 3,
             disp12_diff     = 3,
             uniqueness      = 10,
-            min_disp_pixels = 8,        # only add well-measured 3D points
+            min_disp_pixels = 8,
             wls_lambda      = 12000,    # more smoothing for corridor walls
             wls_sigma       = 1.5,
         ),
         min_tracked_pts  = 100,
-        max_map_pts      = 800,         # more constraints for heading estimation
+        max_map_pts      = 800,
         pnp_min_inliers  = 15,
         pnp_ransac_th    = 3.0,
         reproj_thresh    = 2.5,
         use_ba           = True,
         max_velocity     = 1.0,
-        use_depth_update = False,       # noisy SGBM on corridor walls corrupts 3D map
+        use_depth_update = False,
         use_clahe        = True,
         verbose          = False,
     ),
     "outdoors5": StereoVOConfig(
-        feature         = _FEAT,
+        feature         = _FEAT_STEREO,
         disparity       = DisparityConfig(
             num_disparities = 128,
             block_size      = 11,
@@ -203,11 +185,11 @@ STEREO_CONFIGS = {
             wls_lambda      = 8000,
             wls_sigma       = 1.2,
         ),
-        min_tracked_pts  = 100,
-        max_map_pts      = 600,
+        min_tracked_pts  = 120,
+        max_map_pts      = 1200,
         pnp_min_inliers  = 15,
-        pnp_ransac_th    = 2.0,
-        reproj_thresh    = 2.0,
+        pnp_ransac_th    = 1.5,
+        reproj_thresh    = 1.5,
         use_ba           = True,
         max_velocity     = 2.0,
         use_depth_update = False,
@@ -230,13 +212,7 @@ def collect_gt(loader, poses):
 
 
 def compute_rpe_d1_on_consecutive_gt(loader, poses):
-    """
-    RPE d=1 on segments where original frame indices are consecutive.
-    Handles start+end-only GT (corridor3/outdoors5) by skipping the gap
-    between the start and end coverage blocks, so only truly consecutive
-    frame pairs contribute to the RMSE.
-    Returns (rpe_trans_rmse, rpe_rot_rmse) in metres / degrees.
-    """
+    """RPE d=1 on consecutive-GT segments only; skips mocap gaps in corridor3/outdoors5."""
     all_est, all_gt, all_idx = [], [], []
     for i, frame in enumerate(loader):
         if i >= len(poses):
@@ -246,7 +222,6 @@ def compute_rpe_d1_on_consecutive_gt(loader, poses):
             all_gt.append(frame.T_world_cam0)
             all_idx.append(i)
 
-    # Split into contiguous segments (no frame-index gaps)
     segments, seg_start = [], 0
     for k in range(1, len(all_idx)):
         if all_idx[k] - all_idx[k - 1] > 1:
@@ -270,13 +245,7 @@ def compute_rpe_d1_on_consecutive_gt(loader, poses):
 
 
 def compute_local_ate_blocks(loader, poses, align_mode="se3"):
-    """
-    For corridor3/outdoors5: split GT into start and end contiguous blocks
-    (separated by the gap when camera leaves mocap volume) and compute ATE
-    within each block independently.
-
-    Returns dict with keys: start_ate, end_ate, start_n, end_n.
-    """
+    """ATE within each mocap block (start + end) independently, for partial-GT sequences."""
     all_est, all_gt, all_idx = [], [], []
     for i, frame in enumerate(loader):
         if i >= len(poses):
@@ -290,7 +259,6 @@ def compute_local_ate_blocks(loader, poses, align_mode="se3"):
         return {"start_ate": float("nan"), "end_ate": float("nan"),
                 "start_n": len(all_idx), "end_n": 0}
 
-    # Find the largest gap in frame index — that's the split point
     gaps = [(all_idx[k] - all_idx[k - 1], k) for k in range(1, len(all_idx))]
     split = max(gaps, key=lambda x: x[0])[1]
 
@@ -338,7 +306,6 @@ def run_mono(loader, seq, cfg, show: bool = True):
         img_rect = frame.img_left_rect
         vo.process(img_rect, frame.timestamp)
 
-        # update live display every frame
         if vo._initialised:
             vis.update(
                 img        = img_rect,
@@ -379,7 +346,6 @@ def run_stereo(loader, seq, cfg, show: bool = True):
     for frame in loader:
         vo.process(frame.img_left, frame.img_right, frame.timestamp)
 
-        # update live display every frame
         if vo._initialised:
             vis.update(
                 img        = frame.img_left,
@@ -406,10 +372,6 @@ def run_stereo(loader, seq, cfg, show: bool = True):
 
 
 def save_mono_plot(cfg, loader, mono_vo, mono_time, out_dir, full_gt: bool = True):
-    """Save mono VO 2-D trajectory.
-    full_gt=True  → Sim3-aligned + ATE  (room2 style)
-    full_gt=False → start-aligned + start-end drift  (corridor3/outdoors5)
-    """
     ts  = np.array(mono_vo.trajectory[0]); ts -= ts[0]
     fps = len(loader) / mono_time if mono_time > 0 else 0.0
 
@@ -425,10 +387,13 @@ def save_mono_plot(cfg, loader, mono_vo, mono_time, out_dir, full_gt: bool = Tru
 
     if full_gt:
         mono_aligned, ate_val, ate_errors = None, float("nan"), None
-        est_poses, gt_poses              = collect_gt(loader, mono_vo.trajectory[1])
+        est_poses, gt_poses = collect_gt(loader, mono_vo.trajectory[1])
         if len(gt_poses) > 10:
             result       = align_and_evaluate(est_poses, gt_poses, align="sim3")
-            mono_aligned = np.array([T[:3, 3] for T in result["traj_aligned"]])
+            s            = result.get("s", 1.0)
+            R_a, t_a     = result["R"], result["t"]
+            mono_aligned = np.array([s * R_a @ T[:3, 3] + t_a
+                                     for T in mono_vo.trajectory[1]])
             ate_val      = result["ate_rmse"]
             ate_errors   = result.get("errors", None)
 
@@ -491,7 +456,7 @@ def save_mono_plot(cfg, loader, mono_vo, mono_time, out_dir, full_gt: bool = Tru
         ax2.plot(ts, mono_sa[:, 0], color="#4FC3F7", lw=0.8, label="x")
         ax2.plot(ts, mono_sa[:, 1], color="#EF9A9A", lw=0.8, label="y")
         ax2.set_xlabel("time [s]", color="white")
-        ax2.set_ylabel("[m]", color="white")
+        ax2.set_ylabel("position [m]", color="white")
         ax2.set_title("x–y position over time  (start-aligned)", color="white")
         ax2.legend(fontsize=8, facecolor="#222222", labelcolor="white")
 
@@ -506,15 +471,11 @@ def save_mono_plot(cfg, loader, mono_vo, mono_time, out_dir, full_gt: bool = Tru
     ax.set_aspect("equal")
     plt.tight_layout()
     path = os.path.join(out_dir, "mono_traj.png")
-    plt.savefig(path, dpi=120, facecolor=fig.get_facecolor()); plt.close()
+    plt.savefig(path, dpi=120, facecolor=fig.get_facecolor(), bbox_inches="tight"); plt.close()
     print(f"  Saved {path}")
 
 
 def save_stereo_plot(cfg, loader, stereo_vo, stereo_time, out_dir, full_gt: bool = True):
-    """Save stereo VO 2-D trajectory.
-    full_gt=True  → SE3-aligned + ATE over time  (room2 style)
-    full_gt=False → start-aligned + start-end drift  (corridor3/outdoors5)
-    """
     ts  = np.array(stereo_vo.trajectory[0]); ts -= ts[0]
     fps = len(loader) / stereo_time if stereo_time > 0 else 0.0
 
@@ -533,7 +494,10 @@ def save_stereo_plot(cfg, loader, stereo_vo, stereo_time, out_dir, full_gt: bool
         stereo_aligned, ate_val, ate_errors = None, float("nan"), None
         if len(gt_poses) > 10:
             result         = align_and_evaluate(est_poses, gt_poses, align="se3")
-            stereo_aligned = np.array([T[:3, 3] for T in result["traj_aligned"]])
+            s              = result.get("s", 1.0)
+            R_a, t_a       = result["R"], result["t"]
+            stereo_aligned = np.array([s * R_a @ T[:3, 3] + t_a
+                                       for T in stereo_vo.trajectory[1]])
             ate_val        = result["ate_rmse"]
             ate_errors     = result.get("errors", None)
 
@@ -573,7 +537,7 @@ def save_stereo_plot(cfg, loader, stereo_vo, stereo_time, out_dir, full_gt: bool
             ax2.plot(ts, raw[:, 0], color="#4FC3F7", lw=0.8, label="x")
             ax2.plot(ts, raw[:, 1], color="#EF9A9A", lw=0.8, label="y")
             ax2.set_xlabel("time [s]", color="white")
-            ax2.set_ylabel("[m]", color="white")
+            ax2.set_ylabel("position [m]", color="white")
             ax2.set_title("Raw x-y over time", color="white")
 
         plt.suptitle(f"Stereo VO — {cfg.sequence_name}  |  "
@@ -606,7 +570,7 @@ def save_stereo_plot(cfg, loader, stereo_vo, stereo_time, out_dir, full_gt: bool
         ax2.plot(ts, stereo_sa[:, 0], color="#EF9A9A", lw=0.8, label="x")
         ax2.plot(ts, stereo_sa[:, 1], color="#4FC3F7", lw=0.8, label="y")
         ax2.set_xlabel("time [s]", color="white")
-        ax2.set_ylabel("[m]", color="white")
+        ax2.set_ylabel("position [m]", color="white")
         ax2.set_title("x–y position over time  (start-aligned)", color="white")
 
         plt.suptitle(f"Stereo VO — {cfg.sequence_name}  |  "
@@ -621,24 +585,12 @@ def save_stereo_plot(cfg, loader, stereo_vo, stereo_time, out_dir, full_gt: bool
     ax2.legend(fontsize=8, facecolor="#222222", labelcolor="white")
     plt.tight_layout()
     path = os.path.join(out_dir, "stereo_traj.png")
-    plt.savefig(path, dpi=120, facecolor=fig.get_facecolor()); plt.close()
+    plt.savefig(path, dpi=120, facecolor=fig.get_facecolor(), bbox_inches="tight"); plt.close()
     print(f"  Saved {path}")
 
 
 def save_stereo_sample_visuals(loader, stereo_cfg, out_dir, n_samples: int = 3) -> None:
-    """
-    Sample n_samples frames from the sequence and save:
-      1. rectified_pair_N.png   — side-by-side rectified stereo pair + epipolar lines
-      2. disparity_map_N.png    — colour-mapped SGBM disparity map
-      3. depth_map_N.png        — colour-mapped metric depth map  Z = fB/d
-      4. pointcloud_N.png       — 3D scatter of unprojected grid points
-
-    This satisfies the spec requirement to show disparity, depth, and 3D
-    point cloud as explicit pipeline outputs (not just internal buffers).
-
-    Camera is NOT pre-rectified in TUM-VI: raw fisheye images are
-    remapped via cv2.fisheye.initUndistortRectifyMap before SGBM.
-    """
+    """Sample n_samples frames and save rectified pair, disparity map, depth map, and 3D scatter."""
     from stereo_vo.disparity import DisparityComputer
     from mpl_toolkits.mplot3d import Axes3D   # registers 3D projection
 
@@ -657,17 +609,11 @@ def save_stereo_sample_visuals(loader, stereo_cfg, out_dir, n_samples: int = 3) 
         if img_r is None:
             continue
 
-        # ── Rectification ─────────────────────────────────────────────────
         rect_l, rect_r = loader.calib.rectify(img_l, img_r)
-
-        # ── Disparity (SGBM) ──────────────────────────────────────────────
         disp  = disp_cmp.compute(rect_l, rect_r, rectified=True)
         valid = disp > disp_cmp.cfg.min_disparity
-
-        # ── Depth map  Z = fB / d ──────────────────────────────────────────
         depth = disp_cmp.disparity_to_depth(disp)
 
-        # ── Sparse 3D points from a uniform grid ──────────────────────────
         h, w = rect_l.shape[:2]
         gx = np.linspace(20, w - 20, 40, dtype=int)
         gy = np.linspace(20, h - 20, 30, dtype=int)
@@ -677,7 +623,6 @@ def save_stereo_sample_visuals(loader, stereo_cfg, out_dir, n_samples: int = 3) 
 
         n = j + 1
 
-        # ── 1. Rectified stereo pair ───────────────────────────────────────
         pair_bgr = cv2.cvtColor(np.hstack([rect_l, rect_r]), cv2.COLOR_GRAY2BGR)
         for row in range(0, h, h // 8):
             cv2.line(pair_bgr, (0, row), (2 * w - 1, row), (0, 200, 0), 1)
@@ -687,7 +632,6 @@ def save_stereo_sample_visuals(loader, stereo_cfg, out_dir, n_samples: int = 3) 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
         cv2.imwrite(os.path.join(out_dir, f"rectified_pair_{n}.png"), pair_bgr)
 
-        # ── 2. Disparity map (jet) ─────────────────────────────────────────
         disp_u8 = np.zeros(disp.shape, np.uint8)
         if valid.any():
             dlo, dhi = disp[valid].min(), disp[valid].max()
@@ -695,7 +639,6 @@ def save_stereo_sample_visuals(loader, stereo_cfg, out_dir, n_samples: int = 3) 
                 (disp[valid] - dlo) / max(dhi - dlo, 1e-3) * 255, 0, 255
             ).astype(np.uint8)
         disp_col = cv2.applyColorMap(disp_u8, cv2.COLORMAP_JET)
-        # Add colour bar legend (text labels)
         if valid.any():
             cv2.putText(disp_col, f"disp {dlo:.1f}px", (5, h - 25),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
@@ -703,7 +646,6 @@ def save_stereo_sample_visuals(loader, stereo_cfg, out_dir, n_samples: int = 3) 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
         cv2.imwrite(os.path.join(out_dir, f"disparity_map_{n}.png"), disp_col)
 
-        # ── 3. Depth map (jet) ────────────────────────────────────────────
         valid_d = depth > 0
         depth_u8 = np.zeros(depth.shape, np.uint8)
         if valid_d.any():
@@ -719,7 +661,6 @@ def save_stereo_sample_visuals(loader, stereo_cfg, out_dir, n_samples: int = 3) 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
         cv2.imwrite(os.path.join(out_dir, f"depth_map_{n}.png"), depth_col)
 
-        # ── 4. 3D point cloud scatter (X forward-right, Y down, Z forward) ─
         if len(pts3d) > 0:
             fig = plt.figure(figsize=(8, 6), facecolor="#111111")
             ax  = fig.add_subplot(111, projection="3d")
@@ -747,22 +688,104 @@ def save_stereo_sample_visuals(loader, stereo_cfg, out_dir, n_samples: int = 3) 
         frame.release()
 
 
+def save_feature_sample_visuals(
+    loader,
+    feat_cfg,
+    out_dir:    str,
+    n_samples:  int  = 4,
+    use_clahe:  bool = False,
+) -> None:
+    """Save feature_samples.png: ORB matching (row 0) and LK optical-flow (row 1)."""
+    from mono_vo.feature_tracker import FeatureTracker
+
+    tracker = FeatureTracker(feat_cfg)
+    clahe_op = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)) if use_clahe else None
+
+    n_frames = len(loader._frames)
+    fracs    = np.linspace(0.10, 0.85, n_samples)
+    indices  = [min(int(n_frames * f), n_frames - 2) for f in fracs]
+
+    fig, axes = plt.subplots(2, n_samples, figsize=(6 * n_samples, 9))
+    fig.patch.set_facecolor("#0e0e0e")
+
+    orb = cv2.ORB_create(feat_cfg.max_features)
+    bf  = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
+
+    for col, fidx in enumerate(indices):
+        frame0 = loader._frames[fidx]
+        frame1 = loader._frames[fidx + 1]
+        img0   = frame0.img_left
+        img1   = frame1.img_left
+
+        if clahe_op is not None:
+            img0 = clahe_op.apply(img0)
+            img1 = clahe_op.apply(img1)
+
+        kp0, des0 = orb.detectAndCompute(img0, None)
+        kp1, des1 = orb.detectAndCompute(img1, None)
+
+        n_matches  = 0
+        match_img  = np.hstack([img0, img1])   # fallback: plain side-by-side
+        if des0 is not None and des1 is not None and len(des0) >= 2 and len(des1) >= 2:
+            raw  = bf.knnMatch(des0, des1, k=2)
+            good = [m for m, n in raw
+                    if len((m, n)) == 2 and m.distance < 0.75 * n.distance]
+            n_matches = len(good)
+            match_img = cv2.drawMatches(
+                img0, kp0, img1, kp1, good[:80], None,
+                matchColor        = (0, 200, 255),
+                singlePointColor  = (80, 80, 80),
+                flags             = cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS,
+            )
+            match_img = cv2.cvtColor(match_img, cv2.COLOR_BGR2RGB)
+
+        ax0 = axes[0, col]
+        ax0.imshow(match_img, cmap="gray" if match_img.ndim == 2 else None)
+        ax0.set_title(f"Frame {fidx}  |  ORB: {n_matches} matches",
+                      color="white", fontsize=8)
+        ax0.axis("off")
+
+        pts0 = tracker.detect_grid(img0)
+        pts0_good, pts1_good = tracker.track_optical_flow(img0, img1, pts0)
+
+        h, w   = img0.shape[:2]
+        lk_img = np.zeros((h, w * 2, 3), np.uint8)
+        lk_img[:, :w]  = cv2.cvtColor(img0, cv2.COLOR_GRAY2BGR)
+        lk_img[:, w:]  = cv2.cvtColor(img1, cv2.COLOR_GRAY2BGR)
+
+        for p0, p1 in zip(pts0_good, pts1_good):
+            x0, y0 = int(p0[0]),     int(p0[1])
+            x1, y1 = int(p1[0] + w), int(p1[1])
+            cv2.circle(lk_img, (x0, y0), 3, (0, 200, 255), -1)
+            cv2.circle(lk_img, (x1, y1), 3, (0, 255, 100), -1)
+            cv2.line(lk_img, (x0, y0), (x1, y1), (200, 200, 0), 1)
+
+        cv2.line(lk_img, (w, 0), (w, h - 1), (180, 180, 180), 1)
+
+        ax1 = axes[1, col]
+        ax1.imshow(cv2.cvtColor(lk_img, cv2.COLOR_BGR2RGB))
+        ax1.set_title(f"Frame {fidx}  |  LK: {len(pts0_good)} tracked",
+                      color="white", fontsize=8)
+        ax1.axis("off")
+
+        frame0.release()
+
+    fig.suptitle(
+        "Feature Pipeline  —  ORB Matching (top)  |  LK Optical-Flow Tracking (bottom)",
+        color="white", fontsize=11, fontweight="bold",
+    )
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, "feature_samples.png")
+    plt.savefig(out_path, dpi=110, facecolor=fig.get_facecolor(), bbox_inches="tight")
+    plt.close()
+    print(f"  Saved feature samples → {out_path}")
+
+
 def save_point_cloud_ply(loader, stereo_vo_obj, stereo_cfg,
                          out_dir, max_pts: int = 1_000_000,
                          sor_k: int = 10, sor_sigma: float = 2.0) -> None:
-    """
-    Build a dense 3D point cloud by accumulating SGBM depth across keyframes.
-    Each valid depth pixel is unprojected to camera frame (Z = fB/d) then
-    transformed to world frame using the estimated stereo VO pose.
-    Saved as binary-little-endian PLY
-
-    Spec §V.B: 'Construct 3D point clouds in left camera frame using (5).'
-
-    Quality improvements:
-      - Keyframe-based: accumulate only when camera moves >= 5 cm or >= 2 deg
-      - Min disparity filter: reject pixels with disp < 1.5 px (uncertain depth)
-      - Statistical outlier removal: kNN-based after accumulation
-    """
+    """Build a dense 3D point cloud from keyframe depth maps; saves binary PLY."""
     from stereo_vo.disparity import DisparityComputer
     from scipy.spatial import cKDTree
 
@@ -770,16 +793,15 @@ def save_point_cloud_ply(loader, stereo_vo_obj, stereo_cfg,
     f_px = float(disp_cmp.f)
     cx   = float(disp_cmp.cx)
     cy   = float(disp_cmp.cy)
-    fB   = f_px * float(disp_cmp.B)          # fB product for direct disp→Z
-    min_disp_px = 1.5                         # reject near-zero disparity (far/uncertain)
+    fB   = f_px * float(disp_cmp.B)
+    min_disp_px = 1.5
 
-    poses    = stereo_vo_obj.trajectory[1]    # T_wc per frame (world←cam)
+    poses    = stereo_vo_obj.trajectory[1]
     n_frames = min(len(loader._frames), len(poses))
 
-    # ── keyframe selection: accumulate only on sufficient camera motion ──
-    min_trans_m   = 0.05   # 5 cm
+    min_trans_m   = 0.05
     min_rot_deg   = 2.0
-    max_keyframes = 800    # hard cap: prevents OOM on long sequences
+    max_keyframes = 800    # hard cap to avoid OOM on long sequences
 
     frame_indices = []
     prev_T = None
@@ -797,13 +819,11 @@ def save_point_cloud_ply(loader, stereo_vo_obj, stereo_cfg,
             frame_indices.append(i)
             prev_T = T
 
-    # Subsample keyframes evenly if above cap
     if len(frame_indices) > max_keyframes:
         step_kf       = len(frame_indices) // max_keyframes
         frame_indices = frame_indices[::step_kf][:max_keyframes]
 
-    # Auto-scale pixel step so total raw points stay under 4M
-    # kf * (512/step_px)^2 <= target  →  step_px >= 512 * sqrt(kf / target)
+    # Auto-scale pixel step: kf * (512/step_px)^2 <= 4M  →  step_px >= 512*sqrt(kf/4M)
     target_raw = 4_000_000
     step_px = int(np.ceil(512.0 * np.sqrt(len(frame_indices) / target_raw)))
     step_px = max(4, step_px + step_px % 2)   # minimum 4, keep even
@@ -823,16 +843,11 @@ def save_point_cloud_ply(loader, stereo_vo_obj, stereo_cfg,
             frame.release()
             continue
 
-        # ── rectify (TUM-VI is NOT pre-rectified) ─────────────────────────
         rect_l, rect_r = loader.calib.rectify(img_l, img_r)
-
-        # ── SGBM disparity → metric depth map  Z = fB/d ───────────────────
         disp  = disp_cmp.compute(rect_l, rect_r, rectified=True)
         depth = disp_cmp.disparity_to_depth(disp)
 
         h, w = rect_l.shape[:2]
-
-        # Pixel grid (subsampled)
         v_arr = np.arange(step_px // 2, h, step_px, dtype=np.int32)
         u_arr = np.arange(step_px // 2, w, step_px, dtype=np.int32)
         vv, uu = np.meshgrid(v_arr, u_arr, indexing='ij')
@@ -841,7 +856,6 @@ def save_point_cloud_ply(loader, stereo_vo_obj, stereo_cfg,
 
         Z = depth[v_flat, u_flat]
         D = disp[v_flat, u_flat]
-        # Reject: no depth, tiny disparity (far/noisy), or explicitly invalid
         valid = (Z > 0) & (D >= min_disp_px)
         if valid.sum() < 5:
             frame.release()
@@ -851,18 +865,14 @@ def save_point_cloud_ply(loader, stereo_vo_obj, stereo_cfg,
         u_v = u_flat[valid].astype(np.float64)
         v_v = v_flat[valid].astype(np.float64)
 
-        # ── 3D reconstruction: spec eq (5) ────────────────────────────────
-        # Z = fB/d,  X = (u - cx)*Z/f,  Y = (v - cy)*Z/f
         X_v = (u_v - cx) * Z_v / f_px
         Y_v = (v_v - cy) * Z_v / f_px
-        pts_cam = np.stack([X_v, Y_v, Z_v], axis=1)   # (N, 3) left cam frame
+        pts_cam = np.stack([X_v, Y_v, Z_v], axis=1)
 
-        # ── transform to world frame using estimated pose ──────────────────
         T_wc  = poses[fidx]
         pts_w = (T_wc[:3, :3] @ pts_cam.T).T + T_wc[:3, 3]
 
-        # ── colour from rectified left image (greyscale → RGB) ────────────
-        intensity = rect_l[v_flat[valid], u_flat[valid]]   # uint8
+        intensity = rect_l[v_flat[valid], u_flat[valid]]
         rgb = np.stack([intensity, intensity, intensity], axis=1)
 
         all_xyz.append(pts_w.astype(np.float32))
@@ -873,28 +883,24 @@ def save_point_cloud_ply(loader, stereo_vo_obj, stereo_cfg,
         print("  [PLY] no valid points — skipping")
         return
 
-    pts = np.vstack(all_xyz)   # (M, 3) float32
-    col = np.vstack(all_rgb)   # (M, 3) uint8
+    pts = np.vstack(all_xyz)
+    col = np.vstack(all_rgb)
 
-    # ── statistical outlier removal (kNN-based) ───────────────────────────
     print(f"  [PLY] {len(pts):,} raw points — running outlier removal ...")
     tree = cKDTree(pts)
     dists, _ = tree.query(pts, k=sor_k + 1)   # k+1: first hit is self (dist=0)
-    mean_nn  = dists[:, 1:].mean(axis=1)       # mean distance to k neighbours
+    mean_nn  = dists[:, 1:].mean(axis=1)
     thr      = mean_nn.mean() + sor_sigma * mean_nn.std()
     keep     = mean_nn < thr
     pts = pts[keep];  col = col[keep]
     print(f"  [PLY] {keep.sum():,} points after outlier removal "
           f"({(~keep).sum():,} removed, thr={thr:.3f}m)")
 
-    # Random subsample if above cap
     if len(pts) > max_pts:
         idx = np.random.choice(len(pts), max_pts, replace=False)
         pts = pts[idx]
         col = col[idx]
 
-    # ── write binary-little-endian PLY ────────────────────────────────────
-    # Layout per vertex: 3× float32 (xyz) + 3× uint8 (rgb) = 15 bytes
     header = (
         "ply\n"
         "format binary_little_endian 1.0\n"
@@ -910,9 +916,7 @@ def save_point_cloud_ply(loader, stereo_vo_obj, stereo_cfg,
         "end_header\n"
     ).encode("ascii")
 
-    # Pack xyz (float32) and rgb (uint8) as tightly as possible
-    xyz_bytes = pts.astype(np.float32).tobytes()        # N × 12 bytes
-    # Interleave: build one byte-row per vertex [x y z r g b]
+    xyz_bytes = pts.astype(np.float32).tobytes()
     n = len(pts)
     vertex_buf = np.empty((n, 15), dtype=np.uint8)
     vertex_buf[:, :12] = np.frombuffer(xyz_bytes, dtype=np.uint8).reshape(n, 12)
@@ -1058,7 +1062,6 @@ import cv2
 print(cv2.__version__); print(cv2.getBuildInformation()[:800])
 
 
-# print calibration once using first sequence
 _tmp_cfg    = load_run_config(SEQUENCES[0])
 _tmp_loader = TUMVILoader.from_config(_tmp_cfg)
 print_camera_intrinsics(_tmp_loader.calib.cam0.K, name="cam0 (unrectified)")
@@ -1071,7 +1074,7 @@ print_stereo_params(
 print_stereo_extrinsics(_tmp_loader.calib)
 
 for config_file in SEQUENCES:
-    np.random.seed(42)          # reset per-sequence so map capping is reproducible
+    np.random.seed(42)  # reset per-sequence so map capping is reproducible
     cfg     = load_run_config(config_file)
     loader  = TUMVILoader.from_config(cfg)
     seq     = cfg.sequence_name
@@ -1100,17 +1103,15 @@ for config_file in SEQUENCES:
     save_mono_plot(cfg, loader, mono_vo, mono_time, out_dir, full_gt=_full_gt)
     save_stereo_plot(cfg, loader, stereo_vo, stereo_time, out_dir, full_gt=_full_gt)
     save_stereo_sample_visuals(loader, stereo_cfg, out_dir, n_samples=3)
-    # room2: CLAHE-enhanced SGBM produces denser but noisier cloud on flat
-    # walls — tighten SOR to k=20, sigma=1.0 (vs default 2.0) to remove
-    # CLAHE-induced SGBM speckle on flat wall surfaces.
+    save_feature_sample_visuals(loader, stereo_cfg.feature, out_dir, n_samples=4,
+                                use_clahe=stereo_cfg.use_clahe)
+    # room2: tighter SOR (k=20, sigma=1.0) removes CLAHE-induced SGBM speckle on flat walls
     _sor_k, _sor_sigma = (20, 1.0) if seq == "room2" else (10, 2.0)
     save_point_cloud_ply(loader, stereo_vo, stereo_cfg, out_dir,
                          sor_k=_sor_k, sor_sigma=_sor_sigma)
 
-    gt_list = [f.T_world_cam0 for f in loader]   # None where GT missing
+    gt_list = [f.T_world_cam0 for f in loader]
 
-    # For drift sequences: pre-apply start-pose alignment so 3D plots show
-    # the trajectory in GT world frame without misleading SE3/Sim3 fitting.
     if _full_gt:
         poses_3d_m = mono_vo.trajectory[1]
         poses_3d_s = stereo_vo.trajectory[1]
@@ -1125,7 +1126,7 @@ for config_file in SEQUENCES:
         else:
             poses_3d_m = mono_vo.trajectory[1]
             poses_3d_s = stereo_vo.trajectory[1]
-        align_m = align_s = ""   # already start-aligned; skip SE3/Sim3 fit
+        align_m = align_s = ""
         _pre_drift_m = start_end_drift(mono_vo.trajectory[1],
                                        [_gt_nonnull[0], _gt_nonnull[-1]]) \
                        if len(_gt_nonnull) >= 2 else float("nan")
@@ -1136,16 +1137,18 @@ for config_file in SEQUENCES:
     save_3d_trajectory(
         est_poses = poses_3d_m,
         gt_poses  = gt_list,
-        title     = f"Mono VO — {seq}",
+        title     = f"Mono VO — {seq}  (Sim3-aligned)",
         out_path  = os.path.join(out_dir, "mono_traj_3d.png"),
         align     = align_m,
+        show_gt   = False,
     )
     save_3d_trajectory(
         est_poses = poses_3d_s,
         gt_poses  = gt_list,
-        title     = f"Stereo VO — {seq}",
+        title     = f"Stereo VO — {seq}  (SE3-aligned)",
         out_path  = os.path.join(out_dir, "stereo_traj_3d.png"),
         align     = align_s,
+        show_gt   = False,
     )
 
     save_comparison_3d(
@@ -1166,7 +1169,6 @@ for config_file in SEQUENCES:
         mono_result   = align_and_evaluate(mono_est,   mono_gt,   align="sim3")
         stereo_result = align_and_evaluate(stereo_est, stereo_gt, align="se3")
 
-        # GT path length: available because room2 has full GT coverage.
         gt_poses_all = [f.T_world_cam0 for f in loader if f.T_world_cam0 is not None]
         gt_traj_len  = traj_path_length(gt_poses_all)
 
@@ -1254,7 +1256,6 @@ for config_file in SEQUENCES:
         else:
             mono_drift = stereo_drift = float("nan")
 
-        # Estimated trajectory lengths (GT path unknown — partial GT only).
         mono_traj_len_est   = traj_path_length(mono_vo.trajectory[1])
         stereo_traj_len_est = traj_path_length(stereo_vo.trajectory[1])
 
@@ -1262,11 +1263,9 @@ for config_file in SEQUENCES:
         mono_success     = (n_frames - mono_vo.n_failures)   / n_frames * 100
         stereo_success   = (n_frames - stereo_vo.n_failures) / n_frames * 100
 
-        # Per-frame RPE on consecutive GT segments.
         stereo_rpe_d1, stereo_rpe_rot_d1 = compute_rpe_d1_on_consecutive_gt(
             loader, stereo_vo.trajectory[1])
 
-        # Local ATE inside each mocap block (start + end coverage separately)
         mono_blocks   = compute_local_ate_blocks(
             loader, mono_vo.trajectory[1],   align_mode="sim3")
         stereo_blocks = compute_local_ate_blocks(
@@ -1376,24 +1375,9 @@ print("\nAll trajectory files saved under outputs/<sequence>/")
 save_results_csv(all_results, "outputs/evaluation_results.csv")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  DYNAMIC SCENE SENSITIVITY  (Spec §VI — required quantification)
-#  RANSAC inlier ratio per frame measures how much tracked points are
-#  consistent with the static-scene ego-motion model.  A drop in ratio
-#  indicates dynamic objects contaminating the PnP solve.
-# ─────────────────────────────────────────────────────────────────────────────
-
 def report_dynamic_sensitivity(all_results: dict,
                                csv_path: str = "outputs/dynamic_results.csv") -> None:
-    """
-    Spec §VI: quantify dynamic-scene sensitivity via RANSAC inlier ratio.
-
-    For every sequence and both pipelines, report:
-      - mean inlier ratio across all tracking frames
-      - % of frames with ratio < 0.70  (potential dynamic contamination)
-      - % of frames with ratio < 0.50  (severe contamination / PnP failure)
-    Saves results to csv_path.
-    """
+    """Report RANSAC inlier ratio per frame; low ratio indicates dynamic object contamination."""
     LOW_TH  = 0.70
     SEV_TH  = 0.50
 
@@ -1463,16 +1447,10 @@ def report_dynamic_sensitivity(all_results: dict,
 report_dynamic_sensitivity(all_results)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  ILLUMINATION SENSITIVITY ABLATION  (Spec §VI — required quantification)
-#  Runs mono VO only with CLAHE toggled, compares tracking failures and ATE/drift
-#  against the baseline already stored in all_results.
-# ─────────────────────────────────────────────────────────────────────────────
 import copy
 
 def _run_single_clahe_abl(pipeline_cls, calib_obj, base_cfg, loader,
                            is_full_gt, base_fail, base_metric, align_mode):
-    """Helper: run one pipeline with CLAHE toggled, return (fail, metric)."""
     abl_cfg           = copy.deepcopy(base_cfg)
     abl_cfg.use_clahe = not base_cfg.use_clahe
     abl_cfg.verbose   = False
@@ -1498,11 +1476,7 @@ def _run_single_clahe_abl(pipeline_cls, calib_obj, base_cfg, loader,
 
 def run_clahe_ablation(all_results: dict,
                        csv_path: str = "outputs/clahe_ablation.csv") -> None:
-    """
-    Spec §VI — quantify sensitivity to illumination changes.
-    Runs BOTH mono and stereo VO with CLAHE toggled for every sequence,
-    prints a comparison table of failures and ATE/drift, and saves to csv_path.
-    """
+    """Run both pipelines with CLAHE toggled per sequence; compare failures and ATE/drift."""
     print("\n" + "=" * 74)
     print("  ILLUMINATION SENSITIVITY ABLATION  —  CLAHE on vs off  (Spec §VI)")
     print("=" * 74)
@@ -1535,7 +1509,6 @@ def run_clahe_ablation(all_results: dict,
             base_fail   = all_results[seq][fail_key]
             base_metric = all_results[seq].get(metric_key, float("nan"))
 
-            # run ablation (CLAHE toggled)
             if pipeline_label == "Mono":
                 abl_fail, abl_metric = _run_single_clahe_abl(
                     MonoVO, loader.calib.cam0, base_cfg,

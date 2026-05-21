@@ -1,35 +1,13 @@
-"""
-Trajectory evaluation metrics for TUM VI.
-
-Functions
----------
-align_sim3        : Umeyama Sim(3) alignment  (for monocular VO)
-align_se3         : Least-squares SE(3) alignment (for stereo VO)
-ate_rmse          : Absolute Trajectory Error
-rpe               : Relative Pose Error over fixed segments
-align_and_evaluate: One-call wrapper used by main.py
-"""
-
 import numpy as np
 from typing import List, Dict, Optional
 
 
-# ── Sim(3) alignment (Umeyama 1991) ──────────────────────────────────────────
-
 def align_sim3(
-    est:  List[np.ndarray],   # estimated T_world_cam  (4×4 list)
-    gt:   List[np.ndarray],   # ground-truth T_world_cam (4×4 list)
+    est:  List[np.ndarray],
+    gt:   List[np.ndarray],
 ) -> Dict:
-    """
-    Compute optimal Sim(3) alignment: scale s, rotation R, translation t
-    such that  s*R*p_est + t  ≈  p_gt  in least-squares sense.
-
-    Returns dict with keys:
-      s, R, t          – Sim(3) parameters
-      traj_aligned     – list of aligned 4×4 poses
-      scale            – recovered scale
-    """
-    p_est = np.array([T[:3, 3] for T in est])   # (N,3)
+    """Umeyama Sim(3) alignment: s*R*p_est + t ≈ p_gt (least-squares)."""
+    p_est = np.array([T[:3, 3] for T in est])
     p_gt  = np.array([T[:3, 3] for T in gt])
 
     n = len(p_est)
@@ -39,7 +17,7 @@ def align_sim3(
     pg   = p_gt  - mu_g
 
     var_e = (pe ** 2).sum() / n
-    W     = (pg.T @ pe) / n                      # 3×3 cross-covariance
+    W     = (pg.T @ pe) / n
 
     U, D, Vt = np.linalg.svd(W)
     S = np.eye(3)
@@ -50,7 +28,6 @@ def align_sim3(
     s = (D * S.diagonal()).sum() / max(var_e, 1e-10)
     t = mu_g - s * R @ mu_e
 
-    # Apply to all poses
     aligned = []
     for T in est:
         T_new = T.copy()
@@ -65,10 +42,7 @@ def align_se3(
     est: List[np.ndarray],
     gt:  List[np.ndarray],
 ) -> Dict:
-    """
-    SE(3) alignment via horn's method (no scale).
-    Used for stereo VO (metric scale already correct).
-    """
+    """SE(3) alignment (no scale) for stereo VO."""
     p_est = np.array([T[:3, 3] for T in est])
     p_gt  = np.array([T[:3, 3] for T in gt])
 
@@ -95,16 +69,10 @@ def align_se3(
     return {"R": R, "t": t, "traj_aligned": aligned, "scale": 1.0}
 
 
-# ── ATE ───────────────────────────────────────────────────────────────────────
-
 def ate_rmse(
     aligned: List[np.ndarray],
     gt:      List[np.ndarray],
 ) -> Dict:
-    """
-    ATE after alignment.
-    Returns dict: ate_rmse, ate_mean, ate_std, ate_max, errors (N,)
-    """
     errors = np.array([
         np.linalg.norm(a[:3, 3] - g[:3, 3])
         for a, g in zip(aligned, gt)
@@ -118,28 +86,19 @@ def ate_rmse(
     }
 
 
-# ── RPE ───────────────────────────────────────────────────────────────────────
-
 def rpe(
     est: List[np.ndarray],
     gt:  List[np.ndarray],
     delta: int = 1,
 ) -> Dict:
-    """
-    Relative Pose Error over segments of length `delta` frames.
-    Returns dict: rpe_trans_rmse, rpe_rot_rmse
-    """
+    """Relative Pose Error over segments of length `delta` frames."""
     trans_errs = []
     rot_errs   = []
     for i in range(len(est) - delta):
-        # Relative pose in estimated trajectory
         dT_est = np.linalg.inv(est[i]) @ est[i + delta]
-        # Relative pose in GT
         dT_gt  = np.linalg.inv(gt[i])  @ gt[i + delta]
-        # Error pose
         E = np.linalg.inv(dT_gt) @ dT_est
         trans_errs.append(np.linalg.norm(E[:3, 3]))
-        # Rotation angle from trace
         cos_th = np.clip((np.trace(E[:3, :3]) - 1) / 2, -1, 1)
         rot_errs.append(float(np.degrees(np.arccos(cos_th))))
 
@@ -153,38 +112,23 @@ def rpe(
     }
 
 
-# ── start-end drift ───────────────────────────────────────────────────────────
-
 def start_end_drift(
     est: List[np.ndarray],
     gt:  List[np.ndarray],
 ) -> float:
-    """
-    ||T_est_end - T_gt_end|| after aligning start poses.
-    Used for corridor3 and outdoors5 (start+end GT only).
-    """
-    # Align start
+    """End-point error after aligning start poses."""
     T_align = gt[0] @ np.linalg.inv(est[0])
     est_end_aligned = T_align @ est[-1]
     return float(np.linalg.norm(est_end_aligned[:3, 3] - gt[-1][:3, 3]))
 
-
-# ── distance-based RPE (spec: d=100 m segments) ───────────────────────────────
 
 def rpe_distance_based(
     est:         List[np.ndarray],
     gt:          List[np.ndarray],
     target_dist: float = 100.0,
 ) -> Dict:
-    """
-    RPE over segments whose path length ≈ target_dist metres.
-    For each frame i, finds j so that the estimated trajectory
-    travels target_dist metres from i to j, then computes the
-    relative-pose error against the matching GT segment.
-
-    Returns nan metrics (with n_segments=0) when the total trajectory
-    is shorter than target_dist (e.g. room2 ~15 m < 100 m).
-    """
+    """RPE over segments whose estimated path length ≈ target_dist metres.
+    Returns nan metrics (n_segments=0) when total trajectory < target_dist."""
     n = len(est)
     step_lengths = np.zeros(n)
     for i in range(1, n):
@@ -229,24 +173,15 @@ def rpe_distance_based(
     }
 
 
-# ── rotation-based RPE (spec: θ=60° segments) ────────────────────────────────
-
 def rpe_rotation_based(
     est:            List[np.ndarray],
     gt:             List[np.ndarray],
     target_rot_deg: float = 60.0,
 ) -> Dict:
-    """
-    RPE_rot over segments whose cumulative ESTIMATED rotation ≈ target_rot_deg.
-    Spec: θ=60° for rotation — measures how much rotation drifts per 60° of travel.
-
-    Segment endpoints defined from estimated trajectory (consistent with
-    rpe_distance_based which uses estimated path length for 100m segments).
-    """
+    """RPE_rot over segments whose cumulative estimated rotation ≈ target_rot_deg."""
     n = len(est)
     target_rot_rad = np.radians(target_rot_deg)
 
-    # Cumulative rotation along estimated trajectory
     step_rots = np.zeros(n)
     for i in range(1, n):
         dR = est[i - 1][:3, :3].T @ est[i][:3, :3]
@@ -287,16 +222,12 @@ def rpe_rotation_based(
     }
 
 
-# ── one-call wrapper ──────────────────────────────────────────────────────────
-
 def align_and_evaluate(
     est:   List[np.ndarray],
     gt:    List[np.ndarray],
-    align: str = "sim3",       # "sim3" for mono, "se3" for stereo
+    align: str = "sim3",
 ) -> Dict:
-    """
-    Align, compute ATE and frame-based + distance-based RPE.
-    """
+    """Align then compute ATE + frame-based and distance-based RPE."""
     if align == "sim3":
         result = align_sim3(est, gt)
     else:

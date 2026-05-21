@@ -1,13 +1,3 @@
-"""
-Stereo Visual Odometry — clean classical implementation.
-Follows the project spec exactly:
-  1. Rectify stereo pair
-  2. SGBM disparity
-  3. 3D point cloud via Z = fB/d
-  4. Track 3D→2D via LK + PnP
-  5. Add new stereo points when map runs low
-"""
-
 import numpy as np
 import cv2
 from dataclasses import dataclass, field
@@ -32,9 +22,9 @@ class StereoVOConfig:
     reproj_thresh:    float = 4.0
     use_ba:           bool  = True
     max_velocity:     float = 0.5
-    use_depth_update: bool  = True   # disable for low-texture scenes (corridor)
-    use_clahe:        bool  = False  # CLAHE contrast enhancement before SGBM+LK
-    use_ess_rotation: bool  = False  # use E-matrix rotation + linear t (outdoor: reduces heading drift)
+    use_depth_update: bool  = True   # disable for low-texture scenes where SGBM is noisy
+    use_clahe:        bool  = False
+    use_ess_rotation: bool  = False  # E-matrix rotation + metric t; reduces heading drift outdoors
     verbose:          bool  = True
 
 
@@ -53,9 +43,9 @@ class StereoVO:
         self._initialised  = False
         self._frame_id     = 0
         self.n_failures    = 0
-        self.n_reinits     = 0   # map-replenishment events (stereo has no full relocalization)
+        self.n_reinits     = 0
         self.n_new_pts     = 0
-        self.inlier_ratios: List[float] = []  # PnP inlier ratio per frame (dynamic sensitivity)
+        self.inlier_ratios: List[float] = []
 
         self._map3d: Optional[np.ndarray] = None
         self._map2d: Optional[np.ndarray] = None
@@ -71,13 +61,11 @@ class StereoVO:
 
         self._clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
 
-    # ── public ────────────────────────────────────────────────────────────
-
     def process(self, img_left: np.ndarray, img_right: np.ndarray,
                 timestamp: float = 0.0) -> Optional[np.ndarray]:
         self._frame_id += 1
         rect_l, rect_r = self.calib.rectify(img_left, img_right)
-        self._rect_r_current = rect_r  # store original for display
+        self._rect_r_current = rect_r
         if self.cfg.use_clahe:
             rect_l = self._clahe.apply(rect_l)
             rect_r = self._clahe.apply(rect_r)
@@ -98,20 +86,25 @@ class StereoVO:
     def current_pose(self) -> np.ndarray:
         return self._T_cur.copy()
 
-    # Properties used by the live visualizer (map2d = current tracked pts)
     @property
     def cur_pts(self) -> Optional[np.ndarray]:
         return self._map2d
 
     @property
     def cur_pts_right(self) -> Optional[np.ndarray]:
-        return None
+        if self._map2d is None or self._map3d is None:
+            return None
+        if len(self._map2d) == 0 or len(self._map3d) != len(self._map2d):
+            return self._map2d
+        Z = self._map3d[:, 2]
+        valid = Z > 0.1
+        pts_r = self._map2d.copy()
+        pts_r[valid, 0] -= self.K[0, 0] * self.calib.baseline / Z[valid]
+        return pts_r
 
     @property
     def cur_right_img(self) -> Optional[np.ndarray]:
         return self._rect_r_current
-
-    # ── init ──────────────────────────────────────────────────────────────
 
     def _init(self, rect_l: np.ndarray, disp: np.ndarray,
                ts: float) -> Optional[np.ndarray]:
@@ -133,7 +126,6 @@ class StereoVO:
                 label="stereo init  frame 0",
             )
 
-        # World = camera frame at t=0  (T = identity)
         self._map3d     = pts3d_cam.copy()
         self._map2d     = pts2d_v.copy()
         self._prev_left = rect_l
@@ -147,12 +139,8 @@ class StereoVO:
         self._record(ts)
         return self._T_cur.copy()
 
-    # ── tracking ──────────────────────────────────────────────────────────
-
     def _track(self, rect_l: np.ndarray, disp: np.ndarray,
                 ts: float) -> Optional[np.ndarray]:
-
-        # 1. LK tracking
         map2d_cur, ok = self._lk_track(self._prev_left, rect_l, self._map2d)
         map3d_t       = self._map3d[ok]
         n_tracked     = ok.sum()
@@ -177,7 +165,6 @@ class StereoVO:
             self._record(ts)
             return self._T_cur.copy()
 
-        # 2. Pose estimation: hybrid E-matrix+linear-t, or PnP fallback
         R, t, inlier_mask = None, None, None
         if self.cfg.use_ess_rotation and n_tracked >= 15:
             R, t, inlier_mask = self._ess_rotation_pose(
@@ -205,7 +192,6 @@ class StereoVO:
             self._record(ts)
             return self._T_cur.copy()
 
-        # 3. BA
         if self.cfg.use_ba and inlier_mask.sum() >= 6:
             R, t = refine_pose_ba(
                 R, t,
@@ -214,7 +200,6 @@ class StereoVO:
                 self.K, self.dist,
             )
 
-        # 4. Velocity check
         T_cw = Rt_to_T(R, t)
         T_wc = invert_T(T_cw)
         vel  = np.linalg.norm(T_wc[:3, 3] - self._T_cur[:3, 3])
@@ -231,7 +216,6 @@ class StereoVO:
             self._record(ts)
             return self._T_cur.copy()
 
-        # 5. Accept pose
         self._T_prev = self._T_cur.copy()
         self._T_cur  = T_wc
         n_in = inlier_mask.sum()
@@ -239,7 +223,6 @@ class StereoVO:
         self._log(f"[{self._frame_id:04d}] OK in={n_in}/{n_tracked} "
                   f"vel={vel:.4f}m pos={np.round(T_wc[:3,3], 3)}")
 
-        # 6. Reprojection filter on PnP inliers
         pts3d_in = map3d_t[inlier_mask]
         pts2d_in = map2d_cur[inlier_mask]
         pts3d_f, pts2d_f = self._filter_reproj(
@@ -249,24 +232,14 @@ class StereoVO:
         self._map3d = pts3d_f if len(pts3d_f) > 10 else pts3d_in
         self._map2d = pts2d_f if len(pts2d_f) > 10 else pts2d_in
 
-        # 6b. Refresh map2d: reproject map3d to exact pixel positions.
-        # Eliminates LK drift that accumulates when map2d is only
-        # updated via optical flow (without this, rotation errors grow
-        # monotonically because 2D correspondences slowly diverge from
-        # the true projected positions).
+        # Reproject to exact pixel positions to eliminate accumulated LK drift.
         self._refresh_map2d(rect_l)
-
-        # 6c. Re-measure existing map point depths from current disparity.
-        # Disabled for low-texture scenes (e.g. corridors) where SGBM
-        # produces noisy disparity on walls — depth noise corrupts PnP.
         if self.cfg.use_depth_update:
             self._update_depths_from_disp(disp)
 
-        # 7. Add new stereo points if map is thin
         if len(self._map3d) < self.cfg.min_tracked_pts:
             self._add_points(rect_l, disp)
 
-        # 8. Cap map
         if len(self._map3d) > self.cfg.max_map_pts:
             idx = np.random.choice(len(self._map3d),
                                    self.cfg.max_map_pts, replace=False)
@@ -276,8 +249,6 @@ class StereoVO:
         self._prev_left = rect_l
         self._record(ts)
         return self._T_cur.copy()
-
-    # ── add new stereo points ─────────────────────────────────────────────
 
     def _add_points(self, rect_l: np.ndarray, disp: np.ndarray) -> None:
         pts2d = self.tracker.detect_grid(rect_l)
@@ -307,23 +278,14 @@ class StereoVO:
         self.n_new_pts += good.sum()
         self._log(f"  +{good.sum()} pts → {len(self._map3d)}")
 
-    # ── helpers ───────────────────────────────────────────────────────────
-
     def _ess_rotation_pose(
         self,
-        pts2d_prev: np.ndarray,  # (N,2) prev 2D positions (LK tracked)
-        pts2d_cur:  np.ndarray,  # (N,2) cur  2D positions
-        pts3d_w:    np.ndarray,  # (N,3) world-frame 3D positions
-        disp:       np.ndarray,  # current disparity map
+        pts2d_prev: np.ndarray,
+        pts2d_cur:  np.ndarray,
+        pts3d_w:    np.ndarray,
+        disp:       np.ndarray,
     ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
-        """
-        Hybrid pose estimation:
-          1. Essential matrix on 2D-2D → R_ess (no depth noise in rotation)
-          2. Current-frame stereo depth → metric scale s
-          3. t_cw_new = R_ess @ t_cw_prev + s * t_ess  (closed-form, no world map)
-
-        Falls back to PnP (returns None triple) on any failure.
-        """
+        """Hybrid pose: E-matrix rotation (no depth noise) + metric scale from stereo depth."""
         E, ess_mask = estimate_essential(pts2d_prev, pts2d_cur, self.K, ransac_th=1.0)
         if E is None or ess_mask.sum() < 12:
             return None, None, None
@@ -332,19 +294,14 @@ class StereoVO:
         if R_ess is None or n_ess < 10:
             return None, None, None
 
-        # ── new rotation (compose with previous absolute rotation) ────────────
-        R_cw_prev = self._T_cur[:3, :3].T      # R_wc.T = R_cw
+        R_cw_prev = self._T_cur[:3, :3].T
         R_cw_new  = R_ess @ R_cw_prev
 
-        # ── previous camera-frame translation ─────────────────────────────────
         t_wc_prev = self._T_cur[:3, 3]
         t_cw_prev = -R_cw_prev @ t_wc_prev
 
-        # ── scale from current stereo depth at essential-matrix inlier pts ────
-        # For inlier i: P_cur_cam = R_ess @ P_prev_cam + s * t_ess
-        # where P_prev_cam = R_cw_prev @ P_world + t_cw_prev
-        # Measure P_cur_cam directly from current disparity.
-        # Scale: s = median over i of (P_cur_i - R_ess @ P_prev_i) · t_hat
+        # Scale: s = median of (P_cur_i - R_ess @ P_prev_i) · t_hat
+        # where P_cur_i measured from current stereo disparity.
         ess_idx = np.where(ess_mask)[0]
         pts3d_cur, _, valid = self.disp_cmp.unproject_points(
             pts2d_cur[ess_idx], disp)
@@ -355,8 +312,7 @@ class StereoVO:
         pts3d_prev_cam = (
             (R_cw_prev @ pts3d_w[ess_idx[valid]].T).T + t_cw_prev
         )
-        # Filter points behind camera
-        front = pts3d_prev_cam[:, 2] > 0.05
+        front = pts3d_prev_cam[:, 2] > 0.05  # reject behind-camera points
         if front.sum() < 6:
             return None, None, None
 
@@ -372,10 +328,8 @@ class StereoVO:
 
         s = float(np.median(pos))
 
-        # ── new translation (closed-form, world map never used for t) ─────────
         t_cw_new = R_ess @ t_cw_prev + s * t_ess
 
-        # Sanity: camera should be close to previous position
         T_cw_new = np.eye(4); T_cw_new[:3, :3] = R_cw_new; T_cw_new[:3, 3] = t_cw_new
         T_wc_new = invert_T(T_cw_new)
         if np.linalg.norm(T_wc_new[:3, 3] - self._T_cur[:3, 3]) > self.cfg.max_velocity:
@@ -386,9 +340,7 @@ class StereoVO:
         return R_cw_new, t_cw_new, inlier_mask
 
     def _update_depths_from_disp(self, disp: np.ndarray) -> None:
-        """Re-measure depth of each tracked map point from the current
-        disparity map and update its world-frame 3D position accordingly.
-        Uses the same patch-median approach as point addition."""
+        """Re-measure map-point depths from current disparity (patch-median)."""
         if self._map3d is None or self._map2d is None or len(self._map2d) == 0:
             return
         r     = self.disp_cmp.cfg.patch_radius
@@ -418,10 +370,7 @@ class StereoVO:
             self._map3d[i] = R_wc @ np.array([X, Y, Z]) + t_wc
 
     def _refresh_map2d(self, rect_l: np.ndarray) -> None:
-        """Reproject map3d to current pose → replace map2d with exact pixel
-        positions and drop points that have left the image.  Called after
-        every accepted pose so LK tracking always starts from the true
-        projection rather than the accumulated optical-flow position."""
+        """Reproject map3d to current pose to replace accumulated LK-drift positions."""
         if self._map3d is None or len(self._map3d) == 0:
             return
         R_cw, t_cw = cam_from_world(self._T_cur)

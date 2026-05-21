@@ -1,11 +1,3 @@
-"""
-Essential matrix estimation, pose recovery, triangulation, PnP, and
-motion-only bundle adjustment.
-  - Full input validation (None check, shape check, min points)
-  - det(R) sanity check after recoverPose
-  - Descriptive failure reasons
-"""
-
 import cv2
 import numpy as np
 from typing import Tuple, Optional
@@ -31,14 +23,12 @@ def estimate_essential(
     if len(pts0) < 8:
         return None, np.zeros(len(pts0), bool)
 
-    # ── from old feature_frontend.py: finite point guard ─────────────────
     finite = np.isfinite(pts0).all(axis=1) & np.isfinite(pts1).all(axis=1)
     pts0 = pts0[finite]
     pts1 = pts1[finite]
     if len(pts0) < 8:
         return None, np.zeros(len(pts0), bool)
 
-    # ── from old feature_frontend.py: cv2.error guard ────────────────────
     try:
         E, mask = cv2.findEssentialMat(
             pts0, pts1, K,
@@ -64,22 +54,16 @@ def recover_pose(
     K:    np.ndarray,
     mask: np.ndarray,
 ) -> Tuple[np.ndarray, np.ndarray, int]:
-    """
-    Recover R, t from Essential matrix with cheirality check.
-    Includes det(R) sanity check (from old geometry.py).
-    Returns (R, t_flat, n_inliers).
-    """
+    """Recover R, t from E with cheirality check. Returns (R, t, n_inliers)."""
     n_in, R, t, _ = cv2.recoverPose(
         E, pts0, pts1, K,
         mask=mask.astype(np.uint8),
     )
 
-    # ── det(R) sanity check (from old geometry.py) ────────────────────────
     if R is not None:
         det = float(np.linalg.det(R))
         if not (0.99 < det < 1.01):
-            # Return but signal failure via n_inliers=0
-            return R, t.ravel(), 0
+            return R, t.ravel(), 0  # signal failure via n_inliers=0
 
     return R, t.ravel(), int(n_in)
 
@@ -91,10 +75,6 @@ def triangulate_points(
     pts1: np.ndarray,
     K:    np.ndarray,
 ) -> np.ndarray:
-    """
-    Triangulate 3D points from two camera poses and matching 2D points.
-    Returns (N, 3) array of 3D points in the frame of camera 0.
-    """
     P0 = K @ np.hstack([R0, t0.reshape(3, 1)])
     P1 = K @ np.hstack([R1, t1.reshape(3, 1)])
     pts4 = cv2.triangulatePoints(
@@ -114,11 +94,7 @@ def pnp_ransac(
     confidence:  float = 0.999,
     min_inliers: int   = 15,
 ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], np.ndarray]:
-    """
-    PnP + RANSAC pose estimation.
-    Returns (R, t, inlier_mask_bool) or (None, None, zeros) on failure.
-    """
-    # ── input validation ──────────────────────────────────────────────────
+    """PnP + RANSAC. Returns (R, t, inlier_mask) or (None, None, zeros)."""
     if pts3d is None or pts2d is None:
         return None, None, np.zeros(0, bool)
     if len(pts3d) < min_inliers:
@@ -139,7 +115,6 @@ def pnp_ransac(
 
     R, _ = cv2.Rodrigues(rvec)
 
-    # ── det(R) sanity check ───────────────────────────────────────────────
     det = float(np.linalg.det(R))
     if not (0.99 < det < 1.01):
         return None, None, np.zeros(len(pts3d), bool)
@@ -157,11 +132,7 @@ def refine_pose_ba(
     K:     np.ndarray,
     dist:  np.ndarray,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Motion-only bundle adjustment via Levenberg-Marquardt.
-    Refines (R, t) by minimising reprojection error over inlier points.
-    Returns refined (R, t).
-    """
+    """Motion-only BA via Levenberg-Marquardt. Returns refined (R, t)."""
     if len(pts3d) < 6:
         return R, t
 
@@ -176,11 +147,9 @@ def refine_pose_ba(
         )
         R_ref, _ = cv2.Rodrigues(rvec)
 
-        # ── det(R) check on refined result ────────────────────────────────
         det = float(np.linalg.det(R_ref))
         if not (0.99 < det < 1.01):
-            return R, t   # reject refinement, keep original
-
+            return R, t
         return R_ref, tvec.ravel()
     except cv2.error:
-        return R, t   # cv2 LM failed — keep original
+        return R, t

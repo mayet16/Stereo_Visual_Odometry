@@ -4,4 +4,4 @@ room2,stereo,2881,0.9784,0.21,0.1,
 corridor3,mono,5792,0.9838,0.29,0.19,homogeneous walls
 corridor3,stereo,5801,0.9774,0.33,0.28,homogeneous walls
 outdoors5,mono,17736,0.9961,0.03,0.01,pedestrians/cyclists
-outdoors5,stereo,17746,0.9901,0.17,0.09,pedestrians/cyclists
+outdoors5,stereo,17746,0.9866,0.2,0.08,pedestrians/cyclists

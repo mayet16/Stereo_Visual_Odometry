@@ -1,8 +1,3 @@
-"""
-Print utilities for displaying VO pipeline outputs in a clean format.
-Used for report figures and console debugging.
-"""
-
 import numpy as np
 import cv2
 from typing import Optional
@@ -10,21 +5,13 @@ from typing import Optional
 from pathlib import Path
 
 def ensure_dir(path: str) -> Path:
-    """
-    Create directory and all parents if they don't exist.
-    Integrated from old project utils_io.py.
-    Returns resolved Path object.
-    """
+    """Create directory and parents if needed; return resolved Path."""
     p = Path(path).expanduser().resolve()
     p.mkdir(parents=True, exist_ok=True)
     return p
 
 def show_frames(loader, title: str = "cam0", max_frames: int = 300) -> None:
-    """
-    Quick visual sanity check — display frames via cv2.imshow.
-    Press ESC to stop early.
-    Integrated from old project main_mono_vo.py.
-    """
+    """Display frames via cv2.imshow; press ESC to stop early."""
     import cv2
     print(f"\nShowing frames (press ESC to stop) ...")
     for i, frame in enumerate(loader):
@@ -133,10 +120,6 @@ def _fmt_matrix(M: np.ndarray, indent: int = 4) -> str:
 def print_map_init(pts3d: np.ndarray, pts2d: np.ndarray,
                    frame_i: int, frame_j: int,
                    reproj_thresh: float = 3.0) -> None:
-    """
-    Print map initialization summary — mirrors old project Step 6 output.
-    Call this right after the first successful triangulation in MonoVO._try_init()
-    """
     print(f"\n── Map initialisation {'─'*30}")
     print(f"  Init pair        : i={frame_i} → j={frame_j}  "
           f"(gap={frame_j - frame_i} frames)")
@@ -159,17 +142,10 @@ def print_map_init(pts3d: np.ndarray, pts2d: np.ndarray,
 
 
 def print_stereo_extrinsics(calib) -> None:
-    """
-    Print rotation and translation between cam0 and cam1.
-    Computes reprojection error on the rectified stereo pair.
-    Call once at startup from main.py.
-    """
-
     print(f"\n── Stereo extrinsics  (cam1 relative to cam0) {'─'*10}")
 
-    # T_cam1_cam0 stored in StereoPair
-    R  = calib.R          # 3×3
-    t  = calib.t.ravel()  # (3,)
+    R  = calib.R
+    t  = calib.t.ravel()
 
     rvec, _ = cv2.Rodrigues(R)
     angle   = float(np.linalg.norm(rvec) * 180.0 / np.pi)
@@ -193,10 +169,6 @@ def print_mono_reproj_error(pts3d: np.ndarray, pts2d: np.ndarray,
                              R: np.ndarray, t: np.ndarray,
                              K: np.ndarray, dist: np.ndarray,
                              label: str = "mono init") -> None:
-    """
-    Compute and print reprojection error for mono VO map points.
-    Call after map init in MonoVO._try_init().
-    """
 
     if len(pts3d) == 0:
         return
@@ -227,18 +199,9 @@ def print_stereo_reproj_error(pts3d_cam: np.ndarray,
                                pts2d_left: np.ndarray,
                                K_rect: np.ndarray,
                                label: str = "stereo init") -> None:
-    """
-    Compute and print reprojection error for stereo VO map points.
-    pts3d_cam: points in rectified left camera frame (from disparity).
-    pts2d_left: observed pixel positions in left image.
-    K_rect: rectified left camera intrinsics (dist=0 after rectification).
-    Call after map init in StereoVO._init().
-    """
-
     if len(pts3d_cam) == 0:
         return
 
-    # Project using identity pose (points are already in camera frame)
     rvec = np.zeros(3, dtype=np.float64)
     tvec = np.zeros(3, dtype=np.float64)
     dist = np.zeros(5, dtype=np.float64)

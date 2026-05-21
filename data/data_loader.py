@@ -1,20 +1,3 @@
-"""
-TUM VI Data Loader
-==================
-Usage from any other module:
-
-    from data.data_loader import load_run_config, TUMVILoader
-
-    cfg    = load_run_config("config/tumvi_room2.yaml")
-    loader = TUMVILoader.from_config(cfg)
-
-    for frame in loader:
-        img_left  = frame.img_left
-        img_right = frame.img_right
-        T_gt      = frame.T_world_cam0
-        frame.release()
-"""
-
 import os
 import csv
 import numpy as np
@@ -23,10 +6,6 @@ import yaml
 from dataclasses import dataclass, field
 from typing import Optional, List, Tuple, Iterator
 
-
-# ---------------------------------------------------------------------------
-# Run configuration
-# ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class RunConfig:
@@ -67,7 +46,6 @@ def load_run_config(config_yaml: str) -> RunConfig:
     if not os.path.isdir(seq_root):
         raise NotADirectoryError(f"sequence_root not found: {seq_root}")
 
-    # ── fix: use os.path.join instead of Path / operator ─────────────────
     mav0_dir = os.path.join(seq_root, "mav0")
     if not os.path.isdir(mav0_dir):
         raise FileNotFoundError(f"mav0 folder not found: {mav0_dir}")
@@ -92,10 +70,6 @@ def load_run_config(config_yaml: str) -> RunConfig:
     )
 
 
-# ---------------------------------------------------------------------------
-# Camera calibration
-# ---------------------------------------------------------------------------
-
 @dataclass
 class CameraIntrinsics:
     fx: float
@@ -104,7 +78,7 @@ class CameraIntrinsics:
     cy: float
     width:  int
     height: int
-    dist_coeffs: np.ndarray        # [k1, k2, p1, p2] radtan
+    dist_coeffs: np.ndarray
 
     @property
     def K(self) -> np.ndarray:
@@ -119,9 +93,9 @@ class CameraIntrinsics:
 class StereoPair:
     cam0:        CameraIntrinsics
     cam1:        CameraIntrinsics
-    T_cam1_cam0: np.ndarray             # 4×4  cam1 pose in cam0 frame
-    R:           np.ndarray             # rotation    cam1←cam0 (3×3)
-    t:           np.ndarray             # translation cam1←cam0 (3,)
+    T_cam1_cam0: np.ndarray
+    R:           np.ndarray
+    t:           np.ndarray
     map1_left:   Optional[np.ndarray] = field(default=None, repr=False)
     map2_left:   Optional[np.ndarray] = field(default=None, repr=False)
     map1_right:  Optional[np.ndarray] = field(default=None, repr=False)
@@ -137,8 +111,7 @@ class StereoPair:
 
     @property
     def cam0_rect(self) -> "CameraIntrinsics":
-        """Rectified left-camera intrinsics: K from P_left, zero distortion.
-        Use this (not cam0) whenever operating on rectified images."""
+        """Rectified left-camera intrinsics from P_left; zero distortion."""
         assert self.P_left is not None, "Call compute_rectification() first."
         return CameraIntrinsics(
             fx           = float(self.P_left[0, 0]),
@@ -151,21 +124,17 @@ class StereoPair:
         )
 
     def compute_rectification(self) -> None:
-        """
-        TUM VI uses the equidistant (Kannala-Brandt KB4) fisheye model.
-        cv2.fisheye must be used — cv2.stereoRectify assumes radtan and
-        gives wrong maps for this dataset.
-        """
+        # TUM VI uses Kannala-Brandt fisheye — cv2.stereoRectify assumes radtan
+        # and gives wrong maps; cv2.fisheye must be used instead.
         h, w  = self.cam0.height, self.cam0.width
-        R_rel = self.T_cam1_cam0[:3, :3].copy()          # must be contiguous
+        R_rel = self.T_cam1_cam0[:3, :3].copy()  # must be contiguous for cv2
         t_rel = self.T_cam1_cam0[:3,  3].copy().reshape(3, 1)
 
-        # D must be (1,4) for cv2.fisheye
-        D0 = self.cam0.dist_coeffs.reshape(1, 4)
+        D0 = self.cam0.dist_coeffs.reshape(1, 4)  # cv2.fisheye requires (1,4)
         D1 = self.cam1.dist_coeffs.reshape(1, 4)
 
-        # fov_scale=0.33 recovers f≈190px (same as original intrinsics) so that
-        # the fB product stays ≈19 m·px and SGBM disparities land in 2-64 px.
+        # fov_scale=0.33 recovers f≈190px matching original intrinsics, keeping
+        # fB≈19 m·px so SGBM disparities land in the 2–64 px range.
         R_left, R_right, P_left, P_right, Q = cv2.fisheye.stereoRectify(
             self.cam0.K, D0,
             self.cam1.K, D1,
@@ -217,7 +186,6 @@ def load_calibration(yaml_path: str) -> StereoPair:
     T_cam1_cam0 = np.array(data["cam1"]["T_cn_cnm1"],
                             dtype=np.float64).reshape(4, 4)
 
-    # ── extract R and t from T_cam1_cam0 ─────────────────────────────────
     R_extr = T_cam1_cam0[:3, :3].copy()
     t_extr = T_cam1_cam0[:3,  3].copy()
 
@@ -226,15 +194,11 @@ def load_calibration(yaml_path: str) -> StereoPair:
         cam1        = cam1,
         T_cam1_cam0 = T_cam1_cam0,
         R           = R_extr,
-        t           = t_extr,     #
+        t           = t_extr,
     )
     pair.compute_rectification()
     return pair
 
-
-# ---------------------------------------------------------------------------
-# Ground-truth poses
-# ---------------------------------------------------------------------------
 
 def _quat_trans_to_T(qw, qx, qy, qz, tx, ty, tz) -> np.ndarray:
     n = qw*qw + qx*qx + qy*qy + qz*qz
@@ -277,10 +241,6 @@ def _nearest_pose(poses: dict, ts_ns: int,
         return None
     return poses[ts_arr[idx]]
 
-
-# ---------------------------------------------------------------------------
-# Frame
-# ---------------------------------------------------------------------------
 
 @dataclass
 class Frame:
@@ -334,10 +294,6 @@ class Frame:
         self._img_right = None
 
 
-# ---------------------------------------------------------------------------
-# Loader
-# ---------------------------------------------------------------------------
-
 class TUMVILoader:
 
     @classmethod
@@ -374,8 +330,6 @@ class TUMVILoader:
 
         if preload:
             self._preload_images()
-
-    # ── internal ─────────────────────────────────────────────────────────────
 
     def _read_image_csv(self, cam_dir: str) -> List[Tuple[int, str]]:
         csv_path = os.path.join(cam_dir, "data.csv")
@@ -440,8 +394,6 @@ class TUMVILoader:
             if f.img_path_right:
                 _ = f.img_right
 
-    # ── public API ───────────────────────────────────────────────────────────
-
     def __len__(self):              return len(self._frames)
     def __getitem__(self, i):       return self._frames[i]
     def __iter__(self):             return iter(self._frames)
@@ -476,39 +428,31 @@ class TUMVILoader:
         return "\n".join(lines)
 
 
-# ---------------------------------------------------------------------------
-# Trajectory I/O
-# ---------------------------------------------------------------------------
-
 def _R_to_quaternion_xyzw(R: np.ndarray) -> np.ndarray:
-    """
-    Robust Shepperd method for R → quaternion [qx, qy, qz, qw].
-    Integrated from old project utils_io.py.
-    Handles all 4 numerical cases correctly.
-    """
+    """Shepperd method: R → [qx, qy, qz, qw], handles all 4 numerical cases."""
     R  = np.asarray(R, dtype=np.float64)
     tr = np.trace(R)
 
     if tr > 0.0:
-        S  = np.sqrt(tr + 1.0) * 2.0      # S = 4*qw
+        S  = np.sqrt(tr + 1.0) * 2.0
         qw = 0.25 * S
         qx = (R[2,1] - R[1,2]) / S
         qy = (R[0,2] - R[2,0]) / S
         qz = (R[1,0] - R[0,1]) / S
     elif (R[0,0] > R[1,1]) and (R[0,0] > R[2,2]):
-        S  = np.sqrt(1.0 + R[0,0] - R[1,1] - R[2,2]) * 2.0   # S = 4*qx
+        S  = np.sqrt(1.0 + R[0,0] - R[1,1] - R[2,2]) * 2.0
         qw = (R[2,1] - R[1,2]) / S
         qx = 0.25 * S
         qy = (R[0,1] + R[1,0]) / S
         qz = (R[0,2] + R[2,0]) / S
     elif R[1,1] > R[2,2]:
-        S  = np.sqrt(1.0 + R[1,1] - R[0,0] - R[2,2]) * 2.0   # S = 4*qy
+        S  = np.sqrt(1.0 + R[1,1] - R[0,0] - R[2,2]) * 2.0
         qw = (R[0,2] - R[2,0]) / S
         qx = (R[0,1] + R[1,0]) / S
         qy = 0.25 * S
         qz = (R[1,2] + R[2,1]) / S
     else:
-        S  = np.sqrt(1.0 + R[2,2] - R[0,0] - R[1,1]) * 2.0   # S = 4*qz
+        S  = np.sqrt(1.0 + R[2,2] - R[0,0] - R[1,1]) * 2.0
         qw = (R[1,0] - R[0,1]) / S
         qx = (R[0,2] + R[2,0]) / S
         qy = (R[1,2] + R[2,1]) / S
@@ -524,11 +468,7 @@ def save_trajectory_tum(
     timestamps: list,
     poses:      list,
 ) -> None:
-    """
-    Save trajectory in TUM RGB-D format:
-    timestamp tx ty tz qx qy qz qw
-    Uses robust Shepperd quaternion conversion.
-    """
+    """Save trajectory in TUM RGB-D format: timestamp tx ty tz qx qy qz qw."""
     import os
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
 

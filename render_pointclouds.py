@@ -1,22 +1,13 @@
-"""
-Render accumulated PLY point clouds for each sequence and save PNGs for the paper.
-
-Usage:
-    python render_pointclouds.py
-
-Reads:  outputs/<seq>/pointcloud.ply
-Writes: outputs/<seq>/pointcloud_full.png
-"""
+# Usage: python render_pointclouds.py
 
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+from mpl_toolkits.mplot3d import Axes3D  # registers 3D projection
 import os
 
 
-# ── per-sequence render settings ──────────────────────────────────────────────
 SEQUENCES = {
     "room2": {
         "ply":   "outputs/room2/pointcloud.ply",
@@ -68,7 +59,7 @@ def render(seq, cfg):
     xyz, rgb = read_ply(ply_path)
     print(f"{len(xyz):,} points")
 
-    fig = plt.figure(figsize=(7, 5.5), facecolor="#0d0d0d")
+    fig = plt.figure(figsize=(5, 4), facecolor="#0d0d0d")
     ax  = fig.add_subplot(111, projection="3d", facecolor="#0d0d0d")
 
     # Camera frame: X=right, Y=down, Z=forward.

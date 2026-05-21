@@ -1,10 +1,3 @@
-"""
-Disparity computation and 3-D reconstruction for stereo VO.
-Tuned for TUM VI 512×512 global-shutter stereo cameras.
-
-Z = f*B / d   (metric depth from disparity)
-"""
-
 import cv2
 import numpy as np
 from dataclasses import dataclass
@@ -15,26 +8,23 @@ from data.data_loader import StereoPair
 @dataclass
 class DisparityConfig:
     method:          str   = "sgbm"
-    num_disparities: int   = 64      # max disparity range (must be /16)
-    block_size:      int   = 11      # larger = smoother but less detail
+    num_disparities: int   = 64      # must be divisible by 16
+    block_size:      int   = 11
     p1_coeff:        int   = 8
     p2_coeff:        int   = 32
     disp12_diff:     int   = 1
-    uniqueness:      int   = 15      # higher = fewer false matches
-    speckle_window:  int   = 200     # larger = more noise removed
+    uniqueness:      int   = 15
+    speckle_window:  int   = 200
     speckle_range:   int   = 2
     pre_filter_cap:  int   = 63
     mode:            int   = cv2.STEREO_SGBM_MODE_SGBM_3WAY
-    # Depth filtering — conservative for TUM VI
-    min_depth:       float = 0.3     # TUM VI room: nothing closer than 30cm
-    max_depth:       float = 6.0     # room2 is ~6m diameter
-    min_disparity:   float = 2.0     # reject near-zero disparity
-    # WLS post-filter tuning
-    wls_lambda:      int   = 8000    # higher = smoother disparity
-    wls_sigma:       float = 1.5     # colour-space smoothness
-    # Patch size for robust depth at keypoints
-    patch_radius:    int   = 2       # median over (2r+1)^2 patch
-    min_disp_pixels: int   = 3       # min valid-disparity pixels in patch for point creation
+    min_depth:       float = 0.3
+    max_depth:       float = 6.0
+    min_disparity:   float = 2.0
+    wls_lambda:      int   = 8000
+    wls_sigma:       float = 1.5
+    patch_radius:    int   = 2       # median over (2r+1)² patch for robust depth
+    min_disp_pixels: int   = 3       # min valid pixels in patch to accept a 3D point
 
 
 class DisparityComputer:
@@ -45,7 +35,6 @@ class DisparityComputer:
         self.cfg   = cfg
         self._build_matcher()
 
-        # Rectified intrinsics from P_left  [fx 0 cx 0 / 0 fy cy 0 / 0 0 1 0]
         self.f  = float(calib.P_left[0, 0])
         self.cx = float(calib.P_left[0, 2])
         self.cy = float(calib.P_left[1, 2])
@@ -70,7 +59,6 @@ class DisparityComputer:
             preFilterCap      = c.pre_filter_cap,
             mode              = c.mode,
         )
-        # WLS filter for smoother disparity (optional — uses right matcher)
         self._wls     = None
         self._right_m = None
         try:
@@ -89,9 +77,7 @@ class DisparityComputer:
         img_right: np.ndarray,
         rectified: bool = False,
     ) -> np.ndarray:
-        """
-        Returns float32 disparity map (pixels). Invalid = 0.
-        """
+        """Return float32 disparity map in pixels; invalid pixels = 0."""
         if not rectified:
             img_left, img_right = self.calib.rectify(img_left, img_right)
 
@@ -118,19 +104,10 @@ class DisparityComputer:
 
     def unproject_points(
         self,
-        pts2d:  np.ndarray,    # (N,2) pixel coords in rectified left image
-        disp:   np.ndarray,    # (H,W) disparity map
+        pts2d:  np.ndarray,
+        disp:   np.ndarray,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """
-        Lift 2-D keypoints to 3-D using disparity.
-        Uses a median patch for robustness against disparity noise.
-
-        Returns
-        -------
-        pts3d      : (M,3) valid 3-D points in left-camera frame
-        pts2d_v    : (M,2) corresponding pixel coords
-        valid_mask : (N,) bool
-        """
+        """Lift 2D keypoints to 3D via disparity patch-median. Returns (pts3d, pts2d_valid, mask)."""
         r  = self.cfg.patch_radius
         h, w = disp.shape
         N  = len(pts2d)

@@ -1,17 +1,3 @@
-"""
-Feature detection, matching, and optical-flow tracking for monocular VO.
-
-Two modes (select via FeatureConfig.method):
-  'orb'  – ORB detect + BF Hamming match  (fast, good for indoor)
-  'sift' – SIFT detect + BF L2 match       (slower, more robust)
-
-Typical call sequence per frame pair:
-    tracker = FeatureTracker(FeatureConfig())
-    kp0, kp1, pts0, pts1 = tracker.detect_and_match(img0, img1)
-    # or use optical flow tracking across a short window:
-    pts1_tracked, mask = tracker.track_optical_flow(img0, img1, pts0)
-"""
-
 import cv2
 import numpy as np
 from dataclasses import dataclass
@@ -20,19 +6,17 @@ from typing import Tuple, Optional
 
 @dataclass
 class FeatureConfig:
-    method:           str   = "orb"    # "orb" | "sift"
+    method:           str   = "orb"
     max_features:     int   = 2000
-    ratio_thresh:     float = 0.75     # Lowe ratio test
-    use_cross_check:  bool  = False    # symmetric filter on top of ratio test
-    min_matches:      int   = 50       # abort frame if fewer survive
-    # Optical-flow params (Lucas-Kanade)
+    ratio_thresh:     float = 0.75
+    use_cross_check:  bool  = False
+    min_matches:      int   = 50
     lk_win_size:      int   = 21
     lk_max_level:     int   = 3
     lk_max_iter:      int   = 30
     lk_eps:           float = 0.01
-    # FAST grid detector (used to seed optical flow)
     fast_threshold:   int   = 20
-    grid_rows:        int   = 4        # divide image into grid for uniform kp spread
+    grid_rows:        int   = 4
     grid_cols:        int   = 4
 
 
@@ -55,8 +39,6 @@ class FeatureTracker:
 
         self._matcher = cv2.BFMatcher(self._norm, crossCheck=False)
 
-    # ── descriptor-based matching ─────────────────────────────────────────
-
     def detect_and_match(
         self,
         img0: np.ndarray,
@@ -64,27 +46,18 @@ class FeatureTracker:
         mask0: Optional[np.ndarray] = None,
         mask1: Optional[np.ndarray] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Detect features in both images, match with ratio test.
-
-        Returns
-        -------
-        pts0, pts1 : np.ndarray shape (N, 2)  float32
-            Matched pixel coordinates in img0 and img1.
-        """
+        """Detect + match with Lowe ratio test. Returns (pts0, pts1) float32."""
         kp0, des0 = self._det.detectAndCompute(img0, mask0)
         kp1, des1 = self._det.detectAndCompute(img1, mask1)
 
         if des0 is None or des1 is None or len(des0) < 2 or len(des1) < 2:
             return np.empty((0, 2), np.float32), np.empty((0, 2), np.float32)
 
-        # kNN match k=2, then Lowe ratio test
         raw = self._matcher.knnMatch(des0, des1, k=2)
         good = [pair[0] for pair in raw
                 if len(pair) == 2
                 and pair[0].distance < self.cfg.ratio_thresh * pair[1].distance]
 
-        # optional symmetric cross-check
         if self.cfg.use_cross_check and good:
             raw_rev = self._matcher.knnMatch(des1, des0, k=2)
             rev_pairs = {(pair[0].queryIdx, pair[0].trainIdx)
@@ -100,15 +73,8 @@ class FeatureTracker:
         pts1 = np.array([kp1[m.trainIdx].pt for m in good], dtype=np.float32)
         return pts0, pts1
 
-    # ── optical-flow tracking ─────────────────────────────────────────────
-
     def detect_grid(self, img: np.ndarray) -> np.ndarray:
-        """
-        Detect FAST keypoints on a grid so features are spread across
-        the image rather than clustered in one texture-rich region.
-
-        Returns pts : (N, 2) float32
-        """
+        """Detect FAST keypoints on a uniform grid for even spatial coverage."""
         h, w  = img.shape[:2]
         rh    = h // self.cfg.grid_rows
         rw    = w // self.cfg.grid_cols
@@ -124,7 +90,7 @@ class FeatureTracker:
                 if not kps:
                     continue
                 # keep best N per cell
-                kps = sorted(kps, key=lambda k: -k.response)[:10]
+                kps = sorted(kps, key=lambda k: -k.response)[:10]  # best per cell
                 for kp in kps:
                     pts.append([kp.pt[0] + x0, kp.pt[1] + y0])
 
@@ -138,13 +104,7 @@ class FeatureTracker:
         img1:  np.ndarray,
         pts0:  np.ndarray,
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Track pts0 from img0 into img1 using Lucas-Kanade optical flow.
-
-        Returns
-        -------
-        pts0_good, pts1_good : (N, 2) float32  – inlier correspondences
-        """
+        """LK optical flow with forward-backward consistency check."""
         if len(pts0) == 0:
             return np.empty((0, 2), np.float32), np.empty((0, 2), np.float32)
 
@@ -158,7 +118,6 @@ class FeatureTracker:
         pts0_in = pts0.reshape(-1, 1, 2)
         pts1, st, _ = cv2.calcOpticalFlowPyrLK(img0, img1, pts0_in, None,
                                                 **lk_params)
-        # back-track for forward-backward consistency check
         pts0_back, st_back, _ = cv2.calcOpticalFlowPyrLK(img1, img0, pts1, None,
                                                           **lk_params)
         fb_err  = np.linalg.norm(pts0_in - pts0_back, axis=2).squeeze()
