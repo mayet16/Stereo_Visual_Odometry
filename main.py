@@ -26,7 +26,7 @@ from utils.visualizer        import LiveVisualizer, save_3d_trajectory, save_com
 np.random.seed(42)
 print(f"[Reproducibility] np.random.seed(42)  |  Python {__import__('sys').version.split()[0]}  |  NumPy {np.__version__}")
 
-_SHOW = os.environ.get("SHOW_VIS", "1") != "0"
+_SHOW = os.environ.get("SHOW_VIS", "0") != "0"
 
 SEQUENCES = [
     "config/tumvi_room2.yaml",
@@ -73,12 +73,12 @@ MONO_CONFIGS = {
     ),
     "corridor3": MonoVOConfig(
         feature               = _FEAT_MONO,
-        min_tracked_pts       = 80,
-        max_map_pts           = 600,
-        min_parallax_px       = 15.0,
+        min_tracked_pts       = 70,
+        max_map_pts           = 800,
+        min_parallax_px       = 12.0,
         max_parallax_px       = 60.0,
         expected_depth        = 5.0,
-        pnp_min_inliers       = 12,
+        pnp_min_inliers       = 15,
         pnp_ransac_th         = 6.0,
         reproj_thresh         = 4.0,
         use_ba                = True,
@@ -157,12 +157,12 @@ STEREO_CONFIGS = {
             patch_radius    = 3,
             disp12_diff     = 3,
             uniqueness      = 10,
-            min_disp_pixels = 8,
+            min_disp_pixels = 6,
             wls_lambda      = 12000,    # more smoothing for corridor walls
             wls_sigma       = 1.5,
         ),
-        min_tracked_pts  = 100,
-        max_map_pts      = 800,
+        min_tracked_pts  = 120,
+        max_map_pts      = 1000,
         pnp_min_inliers  = 15,
         pnp_ransac_th    = 3.0,
         reproj_thresh    = 2.5,
@@ -1103,7 +1103,7 @@ for config_file in SEQUENCES:
     save_mono_plot(cfg, loader, mono_vo, mono_time, out_dir, full_gt=_full_gt)
     save_stereo_plot(cfg, loader, stereo_vo, stereo_time, out_dir, full_gt=_full_gt)
     save_stereo_sample_visuals(loader, stereo_cfg, out_dir, n_samples=3)
-    save_feature_sample_visuals(loader, stereo_cfg.feature, out_dir, n_samples=4,
+    save_feature_sample_visuals(loader, stereo_cfg.feature, out_dir, n_samples=2,
                                 use_clahe=stereo_cfg.use_clahe)
     # room2: tighter SOR (k=20, sigma=1.0) removes CLAHE-induced SGBM speckle on flat walls
     _sor_k, _sor_sigma = (20, 1.0) if seq == "room2" else (10, 2.0)

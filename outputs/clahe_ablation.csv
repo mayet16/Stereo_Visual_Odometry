@@ -3,10 +3,10 @@ room2,mono,ON,production,5,1.2154,ATE
 room2,mono,OFF,ablation,42,1.2088,ATE
 room2,stereo,ON,production,3,0.4388,ATE
 room2,stereo,OFF,ablation,18,0.7845,ATE
-corridor3,mono,ON,production,12,16.2898,drift
-corridor3,mono,OFF,ablation,85,25.5961,drift
-corridor3,stereo,ON,production,15,6.4716,drift
-corridor3,stereo,OFF,ablation,99,19.631,drift
+corridor3,mono,ON,production,12,12.7804,drift
+corridor3,mono,OFF,ablation,221,13.1375,drift
+corridor3,stereo,ON,production,14,5.0444,drift
+corridor3,stereo,OFF,ablation,83,12.4405,drift
 outdoors5,mono,ON,production,2,16.5157,drift
 outdoors5,mono,OFF,ablation,74,23.5546,drift
 outdoors5,stereo,OFF,production,12,33.0928,drift

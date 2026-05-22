@@ -33,7 +33,7 @@ The system is evaluated on three sequences from the [TUM VI benchmark](https://v
 
 ```mermaid
 flowchart LR
-    A([/"Left Frame\n512×512"/]) --> B["ORB Detect\ngrid 5×5 · max 3000"]
+    A(["Left Frame\n512×512"]) --> B["ORB Detect\ngrid 5×5 · max 3000"]
     B --> C{Initialized?}
 
     C -->|No| D["LK Track\nprev → cur"]
@@ -61,7 +61,7 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    A([/"Left + Right\nFrames 512×512"/]) --> B["Rectify\ncalibrated stereo"]
+    A(["Left + Right\nFrames 512×512"]) --> B["Rectify\ncalibrated stereo"]
     B --> C["SGBM Disparity\nStereoSGBM"]
     C --> D["Unproject 3D\nZ = fB / d"]
     D --> E{Initialized?}
@@ -98,20 +98,20 @@ flowchart LR
 | Est. traj length | 90.0 m | 143.3 m (GT: 140.9 m) | |
 | Tracking failures | 5 / 2882 frames | 3 / 2882 frames | |
 | Success rate | 99.83% | 99.90% | |
-| Runtime | 66.0 fps | 33.1 fps | |
+| Runtime | 110.0 fps | 37.9 fps | |
 
 ### corridor3
 
 | Metric | Mono VO | Stereo VO | Winner |
 |---|---|---|---|
-| Start-end drift | 16.290 m | **6.472 m** | ✓ Stereo |
-| RPE trans d=1 ¹ | N/A | 0.068 m/frame | |
-| Local ATE start block | 0.737 m (n=512) | 0.110 m (n=512) | |
-| Local ATE end block | 0.720 m (n=675) | 0.232 m (n=675) | |
-| Est. traj length | 200.2 m | 299.5 m | GT: N/A (partial) |
-| Tracking failures | 12 / 5802 frames | 15 / 5802 frames | |
-| Success rate | 99.79% | 99.74% | |
-| Runtime | 64.6 fps | 39.6 fps | |
+| Start-end drift | 12.780 m | **5.044 m** | ✓ Stereo |
+| RPE trans d=1 ¹ | N/A | 0.069 m/frame | |
+| Local ATE start block | 0.735 m (n=512) | 0.095 m (n=512) | |
+| Local ATE end block | 0.738 m (n=676) | 0.216 m (n=676) | |
+| Est. traj length | 179.1 m | 301.3 m | GT: N/A (partial) |
+| Tracking failures | 12 / 5802 frames | 14 / 5802 frames | |
+| Success rate | 99.79% | 99.76% | |
+| Runtime | 108.0 fps | 47.7 fps | |
 
 ### outdoors5
 
@@ -124,7 +124,7 @@ flowchart LR
 | Est. traj length | 455.8 m | 926.7 m | GT: N/A (partial) |
 | Tracking failures | 2 / 17747 frames | 12 / 17747 frames | |
 | Success rate | 99.99% | 99.93% | |
-| Runtime | 63.3 fps | 33.9 fps | |
+| Runtime | 91.6 fps | 41.6 fps | |
 
 ¹ Computed only on consecutive GT-covered frames (start and end blocks separately).
 Mono RPE omitted for drift sequences — arbitrary scale makes it uninformative.
@@ -133,8 +133,8 @@ Mono RPE omitted for drift sequences — arbitrary scale makes it uninformative.
 a ~887 s outdoor walk; ORB+E init scale ≈ 0.103). Stereo has correct metric scale but accumulates
 heading drift from noisy disparity at outdoor distances (fB/d noise at 15 m ≈ 6 m/px). See Analysis section.
 
-Mono VO runs at **63–66 fps** (~3.2–3.3× real-time at 20 Hz).
-Stereo VO runs at **33–40 fps** (~1.7–2.0× real-time).
+Mono VO runs at **92–110 fps** (~4.6–5.5× real-time at 20 Hz).
+Stereo VO runs at **38–48 fps** (~1.9–2.4× real-time).
 
 ---
 
@@ -159,7 +159,7 @@ Stereo VO runs at **33–40 fps** (~1.7–2.0× real-time).
 | ![feat](outputs/room2/feature_samples.png) |
 
 > **Row 1**: ORB descriptor matching (ratio test 0.75, up to 80 matches shown) between consecutive frames.
-> **Row 2**: Lucas-Kanade optical flow tracking — feature positions in the previous frame (circles) and current frame (lines), shown side-by-side. Samples taken at 10%, 38%, 63%, 85% of the sequence.
+> **Row 2**: Lucas-Kanade optical flow tracking — feature positions in the previous frame (circles) and current frame (lines), shown side-by-side. Samples taken at 10% and 85% of the sequence.
 
 #### corridor3
 
@@ -180,7 +180,7 @@ Stereo VO runs at **33–40 fps** (~1.7–2.0× real-time).
 | ![feat](outputs/corridor3/feature_samples.png) |
 
 > **Row 1**: ORB descriptor matching between consecutive frames.
-> **Row 2**: LK optical flow tracking. Samples at 10%, 38%, 63%, 85% of the sequence.
+> **Row 2**: LK optical flow tracking. Samples at 10% and 85% of the sequence.
 
 #### outdoors5
 
@@ -201,7 +201,7 @@ Stereo VO runs at **33–40 fps** (~1.7–2.0× real-time).
 | ![feat](outputs/outdoors5/feature_samples.png) |
 
 > **Row 1**: ORB descriptor matching between consecutive frames.
-> **Row 2**: LK optical flow tracking. Samples at 10%, 38%, 63%, 85% of the sequence.
+> **Row 2**: LK optical flow tracking. Samples at 10% and 85% of the sequence.
 
 ---
 
@@ -502,9 +502,9 @@ NumPy seed  : np.random.seed(42)
 ```
 
 Runtime per sequence (measured, Python 3.13.9, OpenCV 4.13.0, no GPU):
-- room2:     mono ~44s   (66.0 fps),  stereo ~87s   (33.1 fps)
-- corridor3: mono ~90s   (64.6 fps),  stereo ~146s  (39.6 fps)
-- outdoors5: mono ~280s  (63.3 fps),  stereo ~524s  (33.9 fps)
+- room2:     mono ~26s   (110.0 fps), stereo ~76s   (37.9 fps)
+- corridor3: mono ~54s   (108.0 fps), stereo ~122s  (47.7 fps)
+- outdoors5: mono ~194s  (91.6 fps),  stereo ~427s  (41.6 fps)
 
 ---
 
@@ -600,38 +600,44 @@ the structured indoor scene benefits from adaptive contrast, reducing stereo fai
 and ATE from 0.785→0.439 m.
 
 ### corridor3 — Stereo advantage: heading accuracy over long hallways
-Stereo drift is **2.5× lower** (6.47 m vs 16.29 m). The corridor's long straight path amplifies any
+Stereo drift is **2.5× lower** (5.04 m vs 12.78 m). The corridor's long straight path amplifies any
 heading error: mono accumulates scale-and-heading drift over 290 s, while stereo's metric 3D map
 keeps the heading constrained through PnP. The mono drift is higher than VD-init results because
 the ORB+E init produces a more geometrically honest (less compressed) trajectory — the expressed
 drift reflects true heading error rather than scale-compression artefact. CLAHE and a large block
-size (21 px) stabilise the SGBM disparity on homogeneous wall textures.
+size (21 px) stabilise the SGBM disparity on homogeneous wall textures. Mono config improvements
+(`pnp_min_inliers=15`, `min_parallax_px=12`, `min_tracked_pts=70`, `max_map_pts=800`) reduced
+mono drift by 21.5% relative to the initial baseline.
 
-### outdoors5 — Known limitation: short baseline at outdoor distances
-Mono wins the drift metric (16.5 m vs 33.1 m), but for a fundamentally different reason: mono
-lacks metric scale (estimated path 455.8 m vs stereo's 926.7 m metric estimate). The start-end
-drift appears smaller because the scale underestimate compresses the whole path — a 16.5 m error
-on a non-metric 455.8 m path cannot be directly compared to stereo's 33.1 m error on a metric
-926.7 m path. Mono tracking failures dropped to 2 with the ORB+E init, reflecting stable feature
-matching on outdoor texture.
+### outdoors5 — Scale ambiguity and heading drift over a long outdoor sequence
+Mono wins the drift metric (16.5 m vs 33.1 m), but this apparent advantage is an artefact of
+scale compression. The ORB+E scale initialises to ≈0.103 (75th-percentile at d₀=5.0 m),
+compressing the estimated path to ≈456 m against the stereo-estimated metric path of ≈927 m.
+A 16.5 m error on a non-metric, 2×-compressed path cannot be directly compared to stereo's
+33.1 m error on a metric 926.7 m path. Mono tracking failures dropped to 2 with the ORB+E init,
+reflecting stable feature matching on rich outdoor texture.
 
-Stereo correctly estimates metric distances but accumulates **heading drift** from noisy disparity
-at outdoor feature depths of 5–20 m. With fB = 18.92 px·m, a feature at 15 m has only ≈1.3 px
-disparity — a 0.5 px noise gives 6 m depth error, which biases PnP rotation at every frame.
+Stereo maintains correct metric scale throughout but accumulates **heading drift** over the
+17,747-frame sequence — the same mechanism as corridor3, amplified by 3× greater feature depth
+(5–20 m) and 3× longer sequence. With fB = 18.92 px·m, a feature at 15 m yields only ≈1.3 px
+disparity; 0.5 px noise gives ≈6 m depth error per map point, biasing PnP rotation at each frame.
+Over nearly 900 s of outdoor travel, this per-frame bias accumulates as heading drift. Setting
+Z_max = 20 m is necessary to keep sufficient 3D map points for PnP; restricting to 5 m starves
+the tracker below the minimum inlier count, causing hundreds of failures.
 
-This is a **fundamental hardware limitation** of a 10 cm baseline stereo rig on outdoor scenes,
-not an implementation deficiency. Systems with longer baselines, IMU fusion, or loop closure
-(e.g., VINS-Mono, ORB-SLAM3) overcome this; a classical frame-to-frame pipeline cannot.
+For metric localisation, stereo remains the preferred choice — it provides accurate metric scale
+(≈927 m estimated path) throughout the sequence. Reducing drift on long outdoor sequences requires
+loop closure or IMU fusion to correct accumulated heading error.
 
 ### Tracking robustness
 
 | Sequence | Mono failures | Mono relocalization attempts | Stereo failures | Stereo reinits |
 |---|---|---|---|---|
 | room2 | 5 | e_reinit=0, vd_reinit=0 | 3 | 3 |
-| corridor3 | 12 | e_reinit=0, vd_reinit=1 | 15 | 15 |
+| corridor3 | 12 | e_reinit=0, vd_reinit=0 | 14 | 14 |
 | outdoors5 | **2** | e_reinit=0, vd_reinit=0 | 12 | 12 |
 
-**Mono relocalization** (per spec §VI): when tracking fails, `_try_reinit()` attempts pose recovery via two strategies — `e_reinit` (anchor 3D-PnP: solve pose from stored anchor map points) and `vd_reinit` (VD-fallback: FAST+LK re-initialization at median scene depth). These are the system's relocalization attempts as defined in §VI of the project specification. The corridor3 `vd_reinit=1` reflects one transient tracking loss mid-sequence recovered via VD fallback.
+**Mono relocalization** (per spec §VI): when tracking fails, `_try_reinit()` attempts pose recovery via two strategies — `e_reinit` (anchor 3D-PnP: solve pose from stored anchor map points) and `vd_reinit` (VD-fallback: FAST+LK re-initialization at median scene depth). These are the system's relocalization attempts as defined in §VI of the project specification.
 
 Stereo `n_reinits` counts failure-recovery events only (PnP failure, insufficient tracked points, velocity spike) — equals `n_failures` because every failure triggers immediate SGBM-based map replenishment.
 
@@ -643,7 +649,7 @@ Per spec §VI: the RANSAC inlier ratio measures how many tracked points are cons
 |---|---|---|---|---|---|---|
 | room2 | Mono | 2815 | 0.982 | 0.2% | 0.1% | |
 | room2 | Stereo | 2881 | 0.978 | 0.2% | 0.1% | |
-| corridor3 | Mono | 5792 | 0.984 | 0.3% | 0.2% | homogeneous walls |
+| corridor3 | Mono | 5793 | 0.984 | 0.2% | 0.2% | homogeneous walls |
 | corridor3 | Stereo | 5801 | 0.977 | 0.3% | 0.3% | homogeneous walls |
 | outdoors5 | Mono | 17736 | 0.996 | 0.0% | 0.0% | pedestrians/cyclists |
 | outdoors5 | Stereo | 17746 | 0.987 | 0.2% | 0.1% | pedestrians/cyclists |
@@ -660,10 +666,10 @@ CLAHE (clip limit 2.0, tile 8×8) is applied selectively per sequence. Productio
 | room2 | Mono | OFF (abl) | 42 | 1.209 m ATE |
 | room2 | Stereo | ON (prod) | 3 | **0.439 m ATE** |
 | room2 | Stereo | OFF (abl) | 18 | 0.785 m ATE |
-| corridor3 | Mono | ON (prod) | 12 | 16.29 m drift |
-| corridor3 | Mono | OFF (abl) | 85 | 25.60 m drift |
-| corridor3 | Stereo | ON (prod) | 15 | 6.47 m drift |
-| corridor3 | Stereo | OFF (abl) | 99 | 19.63 m drift |
+| corridor3 | Mono | ON (prod) | 12 | 12.78 m drift |
+| corridor3 | Mono | OFF (abl) | 221 | 13.14 m drift |
+| corridor3 | Stereo | ON (prod) | 14 | 5.04 m drift |
+| corridor3 | Stereo | OFF (abl) | 83 | 12.44 m drift |
 | outdoors5 | Mono | ON (prod) | 2 | 16.52 m drift |
 | outdoors5 | Mono | OFF (abl) | 74 | 23.55 m drift |
 | outdoors5 | Stereo | OFF (prod) | 12 | 33.09 m drift |
@@ -671,7 +677,7 @@ CLAHE (clip limit 2.0, tile 8×8) is applied selectively per sequence. Productio
 
 Key findings:
 - **Room2**: CLAHE ON for both pipelines — structured indoor scene benefits from adaptive contrast. Disabling mono CLAHE raises failures 5→42 (+37) with negligible ATE change (1.215→1.209 m). Disabling stereo CLAHE raises failures 3→18 (+15) and ATE 0.439→0.785 m (+0.346 m).
-- **Corridor3**: CLAHE is essential — disabling it raises mono failures 12→85 (+73, +9.3 m drift) and stereo failures 15→99 (+84, +13.2 m drift). Homogeneous walls have too little texture without adaptive contrast enhancement.
+- **Corridor3**: CLAHE is critical for tracking stability — disabling it raises mono failures 12→221 (+209) and stereo failures 14→83 (+69, +7.4 m drift). The drift increase on mono is modest (12.78→13.14 m) because the held-pose fallback masks drift accumulation, but the failure spike confirms that homogeneous walls need adaptive contrast enhancement.
 - **Outdoors5 mono**: CLAHE is critical for ORB+E init — disabling it raises failures 2→74 (+72) and drift 16.52→23.55 m (+7.0 m). Without CLAHE the ORB detector finds fewer high-quality matches in variable outdoor lighting, degrading the depth-percentile scale estimate at init.
 - **Outdoors5 stereo**: CLAHE is harmful — enabling it increases drift 33.09→201.45 m (+168.4 m). CLAHE over-enhances sky/foliage gradients, corrupting SGBM disparity on outdoor scenes.
 
@@ -682,17 +688,45 @@ Key findings:
 [1] D. Scaramuzza and F. Fraundorfer, "Visual Odometry [Tutorial]: Part I — The First 30 Years
     and Fundamentals," IEEE Robotics & Automation Magazine, vol. 18, no. 4, pp. 80–92, 2011.
 
-[2] R. Mur-Artal and J. D. Tardós, "ORB-SLAM2: An Open-Source SLAM System for Monocular,
-    Stereo, and RGB-D Cameras," IEEE Transactions on Robotics, vol. 33, no. 5, 2017.
+[2] R. Hartley and A. Zisserman, Multiple View Geometry in Computer Vision, 2nd ed.
+    Cambridge University Press, 2004.
 
 [3] R. Mur-Artal, J. M. M. Montiel, and J. D. Tardós, "ORB-SLAM: A Versatile and Accurate
-    Monocular SLAM System," IEEE Transactions on Robotics, vol. 31, no. 5, 2015.
+    Monocular SLAM System," IEEE Transactions on Robotics, vol. 31, no. 5, pp. 1147–1163, 2015.
 
-[4] D. Schubert et al., "The TUM VI Benchmark for Evaluating Visual-Inertial Odometry,"
-    IEEE/RSJ IROS, 2018.
+[4] R. Mur-Artal and J. D. Tardós, "ORB-SLAM2: An Open-Source SLAM System for Monocular,
+    Stereo, and RGB-D Cameras," IEEE Transactions on Robotics, vol. 33, no. 5, pp. 1255–1262, 2017.
 
-[5] R. Hartley and A. Zisserman, Multiple View Geometry in Computer Vision, 2nd ed.
-    Cambridge University Press, 2004.
+[5] C. Campos, R. Elvira, J. J. G. Rodríguez, J. M. M. Montiel, and J. D. Tardós,
+    "ORB-SLAM3: An Accurate Open-Source Library for Visual, Visual-Inertial, and Multimap SLAM,"
+    IEEE Transactions on Robotics, vol. 37, no. 6, pp. 1874–1890, Dec. 2021.
+
+[6] D. Schubert et al., "The TUM VI Benchmark for Evaluating Visual-Inertial Odometry,"
+    IEEE/RSJ IROS, pp. 1680–1687, 2018.
+
+[7] A. Geiger, P. Lenz, C. Stiller, and R. Urtasun, "Vision Meets Robotics: The KITTI Dataset,"
+    International Journal of Robotics Research, vol. 32, no. 11, pp. 1231–1237, 2013.
+
+[8] NVIDIA Corporation, "Isaac ROS Visual SLAM (cuVSLAM),"
+    GitHub repository, NVIDIA-ISAAC-ROS, 2023.
+
+[9] Z. Teed and J. Deng, "DROID-SLAM: Deep Visual SLAM for Monocular, Stereo, and RGB-D Cameras,"
+    Proc. NeurIPS, 2021.
+
+[10] F. Rameau, D. Sidibé, C. Demonceaux, and D. Fofi,
+     "Structure from Motion Using a Hybrid Stereo-Vision System,"
+     Proc. 12th Int. Conf. Ubiquitous Robots and Ambient Intelligence (URAI 2015),
+     Goyang City, South Korea, Oct. 2015.
+
+[11] D. Gálvez-López and J. D. Tardós,
+     "Bags of Binary Words for Fast Place Recognition in Image Sequences,"
+     IEEE Transactions on Robotics, vol. 28, no. 5, pp. 1188–1197, 2012.
+
+[12] J. Laconte, "How to Write a Robotics Paper,"
+     Online resource, INRAE MathNum, 2023.
+
+[13] J. Laconte, "Figures for Robotics Papers,"
+     Online resource, INRAE MathNum, 2023.
 
 ---
 
