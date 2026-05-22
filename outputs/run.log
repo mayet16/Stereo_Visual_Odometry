@@ -1,0 +1,324 @@
+/home/mayet/anaconda3/bin/python /home/mayet/PycharmProjects/Stereo_VO/main.py
+[Reproducibility] np.random.seed(42)  |  Python 3.13.9  |  NumPy 2.3.5
+4.13.0
+
+General configuration for OpenCV 4.13.0 =====================================
+  Version control:               4.13.0-1-gb4c5ec4042-dirty
+
+  Platform:
+    Timestamp:                   2026-02-03T07:17:59Z
+    Host:                        Linux 6.8.0-1044-azure x86_64
+    CMake:                       4.2.1
+    CMake generator:             Unix Makefiles
+    CMake build tool:            /bin/gmake
+    Configuration:               Release
+    Algorithm Hint:              ALGO_HINT_ACCURATE
+
+  CPU/HW features:
+    Baseline:                    SSE SSE2 SSE3
+      requested:                 SSE3
+    Dispatched code generation:  SSE4_1 SSE4_2 AVX FP16 AVX2 AVX512_SKX
+      SSE4_1 (17 files):         + SSSE3 SSE4_1
+      SSE4_2 (1 files):          + SSSE3 SSE4_1 POPCNT SSE4_2
+      AVX (9 files):
+[TUMVILoader] sequence : room2
+[TUMVILoader] 2882 frames  |  baseline = 10.11 cm
+
+── Camera intrinsics K  (cam0 (unrectified)) ────────────────────
+  fx = 190.9785   fy = 190.9733
+  cx = 254.9317   cy = 256.8974
+  K =
+    [190.978477    0.000000  254.931706]
+    [  0.000000  190.973307  256.897443]
+    [  0.000000    0.000000    1.000000]
+
+── Stereo calibration  ─────────────────────────
+  Focal length  f  : 187.1344 px
+  Baseline      B  : 10.1087 cm  =  0.101087 m
+  Principal pt     : cx=208.2122  cy=255.1885
+  fB product       : 18.9169 px·m
+  Depth at d=10px  : 1.8917 m
+  Depth at d=5px   : 3.7834 m
+
+── Stereo extrinsics  (cam1 relative to cam0) ──────────
+  Rotation R  (cam1 from cam0):
+    [  0.999999   -0.000823   -0.000656]
+    [  0.000792    0.998899   -0.046896]
+    [  0.000694    0.046895    0.998900]
+  Rotation angle     : 2.6886°  (near-zero = good stereo rig)
+
+  Translation t  (cam1 from cam0):
+    tx = -0.10106110 m   ← baseline
+    ty = -0.00197646 m
+    tz = -0.00117564 m
+  Baseline |tx|      : 10.1061 cm
+  Lateral offset ty  : 1.9765 mm  (ideal = 0)
+  Axial  offset tz   : 1.1756 mm  (ideal = 0)
+[TUMVILoader] sequence : room2
+[TUMVILoader] 2882 frames  |  baseline = 10.11 cm
+
+==================================================
+  Sequence  : room2
+  Frames    : 2882   Duration: 144.1s
+  GT poses  : 2587/2882
+  Baseline  : 10.11 cm
+==================================================
+
+Running monocular VO ...
+[MonoVO] ORB+E init  scale=0.0779  n=528  flow=20.6px  t=0.078m
+  Done: 2882 frames  26.2s  (110.0 fps)  failures=5  [LK=4  PnP=0  vel=1]  kf_updates=801  vd_reinit=0  e_reinit=0
+
+Running stereo VO ...
+[Disparity] f=187.13  B=10.11cm  fB=18.9169
+  Done: 2882 frames  76.1s  (37.9 fps)  failures=3  reinits=3
+[save_trajectory_tum] 2816 poses → outputs/room2/mono_traj.txt
+[save_trajectory_tum] 2882 poses → outputs/room2/stereo_traj.txt
+  Saved outputs/room2/mono_traj.png
+  Saved outputs/room2/stereo_traj.png
+[Disparity] f=187.13  B=10.11cm  fB=18.9169
+
+  [Stereo visuals] saving disparity/depth/pointcloud for 3 sample frames ...
+    frame 288: 1066 3D pts  disp=[6.1,24.8]px  depth=[0.76,3.12]m
+    frame 1441: 1053 3D pts  disp=[3.2,41.6]px  depth=[0.50,4.96]m
+    frame 2593: 1055 3D pts  disp=[6.0,42.2]px  depth=[0.50,3.15]m
+  Saved feature samples → outputs/room2/feature_samples.png
+[Disparity] f=187.13  B=10.11cm  fB=18.9169
+
+  [PLY] accumulating 3D points: 800 keyframes (motion >= 5cm / 2deg), pixel step=8 (auto-scaled), min_disp=1.5px ...
+  [PLY] 2,562,160 raw points — running outlier removal ...
+  [PLY] 2,346,604 points after outlier removal (215,556 removed, thr=0.067m)
+  [PLY] 1,000,000 points saved → outputs/room2/pointcloud.ply  (15.0 MB)
+  Saved 3D trajectory → outputs/room2/mono_traj_3d.png
+  Saved 3D trajectory → outputs/room2/stereo_traj_3d.png
+  Saved comparison 3D → outputs/room2/comparison_3d.png
+
+── Evaluation: room2 ──────────────────────────────
+Metric                                Mono VO    Stereo VO
+----------------------------------------------------------
+ATE RMSE [m]                           1.2154      0.4388
+ATE mean [m]                           1.1559      0.3976
+RPE trans 100m [m]                        N/A      3.5525
+RPE rot 60deg [deg]                   84.2146     89.0807
+Sim3/SE3 scale                         0.1109      1.0000
+Est. traj length [m]                    90.04       143.27
+GT traj length [m]                     140.92       140.92
+                 (100m segments)            0          885
+                (60deg segments)         2496         2559
+Tracking failures                           5            3
+Success rate [%]                        99.83        99.90
+Runtime [fps]                           110.0         37.9
+[TUMVILoader] sequence : corridor3
+[TUMVILoader] 5802 frames  |  baseline = 10.11 cm
+
+==================================================
+  Sequence  : corridor3
+  Frames    : 5802   Duration: 290.1s
+  GT poses  : 1196/5802
+  Baseline  : 10.11 cm
+==================================================
+
+Running monocular VO ...
+[MonoVO] ORB+E init  scale=0.1048  n=548  flow=12.9px  t=0.105m
+  Done: 5802 frames  53.7s  (108.0 fps)  failures=12  [LK=12  PnP=0  vel=0]  kf_updates=2064  vd_reinit=0  e_reinit=0
+
+Running stereo VO ...
+[Disparity] f=187.13  B=10.11cm  fB=18.9169
+  Done: 5802 frames  121.5s  (47.7 fps)  failures=14  reinits=14
+[save_trajectory_tum] 5794 poses → outputs/corridor3/mono_traj.txt
+[save_trajectory_tum] 5802 poses → outputs/corridor3/stereo_traj.txt
+  Saved outputs/corridor3/mono_traj.png
+  Saved outputs/corridor3/stereo_traj.png
+[Disparity] f=187.13  B=10.11cm  fB=18.9169
+
+  [Stereo visuals] saving disparity/depth/pointcloud for 3 sample frames ...
+    frame 580: 991 3D pts  disp=[1.1,63.0]px  depth=[0.50,9.76]m
+    frame 2901: 1064 3D pts  disp=[2.3,22.8]px  depth=[0.83,8.18]m
+    frame 5221: 953 3D pts  disp=[0.6,63.0]px  depth=[0.51,9.76]m
+  Saved feature samples → outputs/corridor3/feature_samples.png
+[Disparity] f=187.13  B=10.11cm  fB=18.9169
+
+  [PLY] accumulating 3D points: 800 keyframes (motion >= 5cm / 2deg), pixel step=8 (auto-scaled), min_disp=1.5px ...
+  [PLY] 2,221,494 raw points — running outlier removal ...
+  [PLY] 2,185,677 points after outlier removal (35,817 removed, thr=0.244m)
+  [PLY] 1,000,000 points saved → outputs/corridor3/pointcloud.ply  (15.0 MB)
+  Saved 3D trajectory → outputs/corridor3/mono_traj_3d.png
+  Saved 3D trajectory → outputs/corridor3/stereo_traj_3d.png
+  Saved comparison 3D → outputs/corridor3/comparison_3d.png
+
+── Evaluation: corridor3 (start-end drift) ───────────────
+Metric                                Mono VO    Stereo VO
+----------------------------------------------------------
+Start-end drift [m]                   12.7804       5.0444
+RPE trans d=1 [m] (stereo)                N/A       0.0686
+Local ATE start block [m]              0.7350       0.0948   (n=512)
+Local ATE end block [m]                0.7383       0.2163   (n=676)
+Est. traj length [m]                   179.13       301.32
+GT traj length [m]               N/A (partial GT) N/A (partial GT)
+Tracking failures                          12           14
+Success rate [%]                        99.79        99.76
+Runtime [fps]                           108.0         47.7
+[TUMVILoader] sequence : outdoors5
+[TUMVILoader] 17747 frames  |  baseline = 10.11 cm
+
+==================================================
+  Sequence  : outdoors5
+  Frames    : 17747   Duration: 887.3s
+  GT poses  : 2747/17747
+  Baseline  : 10.11 cm
+==================================================
+
+Running monocular VO ...
+[MonoVO] ORB+E init  scale=0.1034  n=403  flow=15.5px  t=0.103m
+  Done: 17747 frames  193.7s  (91.6 fps)  failures=2  [LK=2  PnP=0  vel=0]  kf_updates=1507  vd_reinit=0  e_reinit=0
+
+Running stereo VO ...
+[Disparity] f=187.13  B=10.11cm  fB=18.9169
+  Done: 17747 frames  426.6s  (41.6 fps)  failures=12  reinits=12
+[save_trajectory_tum] 17737 poses → outputs/outdoors5/mono_traj.txt
+[save_trajectory_tum] 17747 poses → outputs/outdoors5/stereo_traj.txt
+  Saved outputs/outdoors5/mono_traj.png
+  Saved outputs/outdoors5/stereo_traj.png
+[Disparity] f=187.13  B=10.11cm  fB=18.9169
+
+  [Stereo visuals] saving disparity/depth/pointcloud for 3 sample frames ...
+    frame 1774: 846 3D pts  disp=[1.1,22.2]px  depth=[0.85,17.80]m
+    frame 8873: 800 3D pts  disp=[1.1,22.4]px  depth=[0.85,17.80]m
+    frame 15972: 865 3D pts  disp=[1.1,30.0]px  depth=[0.63,17.80]m
+  Saved feature samples → outputs/outdoors5/feature_samples.png
+[Disparity] f=187.13  B=10.11cm  fB=18.9169
+
+  [PLY] accumulating 3D points: 800 keyframes (motion >= 5cm / 2deg), pixel step=8 (auto-scaled), min_disp=1.5px ...
+  [PLY] 1,764,837 raw points — running outlier removal ...
+  [PLY] 1,700,189 points after outlier removal (64,648 removed, thr=0.707m)
+  [PLY] 1,000,000 points saved → outputs/outdoors5/pointcloud.ply  (15.0 MB)
+  Saved 3D trajectory → outputs/outdoors5/mono_traj_3d.png
+  Saved 3D trajectory → outputs/outdoors5/stereo_traj_3d.png
+  Saved comparison 3D → outputs/outdoors5/comparison_3d.png
+
+── Evaluation: outdoors5 (start-end drift) ───────────────
+Metric                                Mono VO    Stereo VO
+----------------------------------------------------------
+Start-end drift [m]                   16.5157      33.0928
+RPE trans d=1 [m] (stereo)                N/A       0.0857
+Local ATE start block [m]              0.6612       0.3433   (n=1182)
+Local ATE end block [m]                0.8798       1.6767   (n=1555)
+Est. traj length [m]                   455.75       926.67
+GT traj length [m]               N/A (partial GT) N/A (partial GT)
+Tracking failures                           2           12
+Success rate [%]                        99.99        99.93
+Runtime [fps]                            91.6         41.6
+
+======================================================================
+  FINAL RESULTS — ALL SEQUENCES
+======================================================================
+Sequence       Metric                          Mono VO  Stereo VO
+----------------------------------------------------------------
+room2          ATE RMSE [m]                     1.2154     0.4388
+               RPE trans 100m [m]                  N/A     3.5525
+                 (100m segments)                     0        885
+               RPE rot 60deg [deg]             84.2146    89.0807
+               Est. traj length [m]               90.0      143.3
+               GT traj length [m]                140.9      140.9
+               Scale (Sim3/SE3)                 0.1109     1.0000
+               Tracking failures                     5          3
+               Success rate [%]                  99.83      99.90
+               Runtime [fps]                     110.0       37.9
+----------------------------------------------------------------
+corridor3      Start-end drift [m]             12.7804     5.0444
+               Est. traj length [m]              179.1      301.3
+               GT traj length [m]           N/A (partial) N/A (partial)
+               Tracking failures                    12         14
+               Success rate [%]                  99.79      99.76
+               Runtime [fps]                     108.0       47.7
+----------------------------------------------------------------
+outdoors5      Start-end drift [m]             16.5157    33.0928
+               Est. traj length [m]              455.7      926.7
+               GT traj length [m]           N/A (partial) N/A (partial)
+               Tracking failures                     2         12
+               Success rate [%]                  99.99      99.93
+               Runtime [fps]                      91.6       41.6
+----------------------------------------------------------------
+
+All trajectory files saved under outputs/<sequence>/
+
+Evaluation results saved → outputs/evaluation_results.csv
+
+========================================================================
+  DYNAMIC SCENE SENSITIVITY  —  RANSAC inlier ratio  (Spec §VI)
+  Low inlier ratio => tracked points inconsistent with static-scene
+  ego-motion model => evidence of dynamic object contamination.
+========================================================================
+Sequence     Pipeline   Frames  Mean ratio   <0.70   <0.50  Note
+------------------------------------------------------------------------
+room2        Mono         2815       0.982    0.2%    0.1%
+room2        Stereo       2881       0.978    0.2%    0.1%
+
+corridor3    Mono         5793       0.984    0.2%    0.2%  <-- homogeneous walls
+corridor3    Stereo       5801       0.977    0.3%    0.3%  <-- homogeneous walls
+
+outdoors5    Mono        17736       0.996    0.0%    0.0%  <-- pedestrians/cyclists
+outdoors5    Stereo      17746       0.987    0.2%    0.1%  <-- pedestrians/cyclists
+
+------------------------------------------------------------------------
+Interpretation:
+  Mean ratio close to 1.0 => most tracked points fit static model (clean).
+  High <0.70 % on outdoors5 => dynamic objects inflate outlier count.
+  <0.50 frames include PnP failures (ratio=0.0) and severe contamination.
+
+  Dynamic sensitivity results saved → outputs/dynamic_results.csv
+
+==========================================================================
+  ILLUMINATION SENSITIVITY ABLATION  —  CLAHE on vs off  (Spec §VI)
+==========================================================================
+Sequence     Pipeline  CLAHE    Failures  ATE / Drift [m]  Config
+--------------------------------------------------------------------------
+[TUMVILoader] sequence : room2
+[TUMVILoader] 2882 frames  |  baseline = 10.11 cm
+[MonoVO] ORB+E init  scale=0.0968  n=154  flow=20.2px  t=0.097m
+room2        Mono      ON              5           1.2154  production
+                       OFF            42           1.2088  ablation
+  effect: failures +37  |  ATE -0.0066 m
+
+[TUMVILoader] sequence : room2
+[TUMVILoader] 2882 frames  |  baseline = 10.11 cm
+[Disparity] f=187.13  B=10.11cm  fB=18.9169
+room2        Stereo    ON              3           0.4388  production
+                       OFF            18           0.7845  ablation
+  effect: failures +15  |  ATE +0.3457 m
+
+--------------------------------------------------------------------------
+[TUMVILoader] sequence : corridor3
+[TUMVILoader] 5802 frames  |  baseline = 10.11 cm
+[MonoVO] ORB+E init  scale=0.0949  n=291  flow=12.1px  t=0.095m
+corridor3    Mono      ON             12          12.7804  production
+                       OFF           221          13.1375  ablation
+  effect: failures +209  |  drift +0.3571 m
+
+[TUMVILoader] sequence : corridor3
+[TUMVILoader] 5802 frames  |  baseline = 10.11 cm
+[Disparity] f=187.13  B=10.11cm  fB=18.9169
+corridor3    Stereo    ON             14           5.0444  production
+                       OFF            83          12.4405  ablation
+  effect: failures +69  |  drift +7.3961 m
+
+--------------------------------------------------------------------------
+[TUMVILoader] sequence : outdoors5
+[TUMVILoader] 17747 frames  |  baseline = 10.11 cm
+[MonoVO] ORB+E init  scale=0.2240  n=283  flow=15.3px  t=0.224m
+outdoors5    Mono      ON              2          16.5157  production
+                       OFF            74          23.5546  ablation
+  effect: failures +72  |  drift +7.0389 m
+
+[TUMVILoader] sequence : outdoors5
+[TUMVILoader] 17747 frames  |  baseline = 10.11 cm
+[Disparity] f=187.13  B=10.11cm  fB=18.9169
+outdoors5    Stereo    OFF            12          33.0928  production
+                       ON             13         201.4501  ablation
+  effect: failures +1  |  drift +168.3573 m
+
+--------------------------------------------------------------------------
+CLAHE ablation complete.
+
+  CLAHE ablation results saved → outputs/clahe_ablation.csv
+
+Process finished with exit code 0

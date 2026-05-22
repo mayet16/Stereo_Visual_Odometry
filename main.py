@@ -4,6 +4,7 @@
 
 import csv
 import os
+import sys
 import time
 import numpy as np
 import matplotlib
@@ -22,6 +23,21 @@ from utils.print_utils       import (print_camera_intrinsics, ensure_dir,
                                      print_sequence_summary)
 from utils.visualizer        import LiveVisualizer, save_3d_trajectory, save_comparison_3d
 
+
+class _Tee:
+    def __init__(self, *streams):
+        self._streams = streams
+    def write(self, data):
+        for s in self._streams:
+            s.write(data)
+    def flush(self):
+        for s in self._streams:
+            s.flush()
+
+os.makedirs("outputs", exist_ok=True)
+_log_file = open("outputs/run.log", "w", buffering=1)
+sys.stdout = _Tee(sys.__stdout__, _log_file)
+sys.stderr = _Tee(sys.__stderr__, _log_file)
 
 np.random.seed(42)
 print(f"[Reproducibility] np.random.seed(42)  |  Python {__import__('sys').version.split()[0]}  |  NumPy {np.__version__}")
@@ -1575,5 +1591,9 @@ def run_clahe_ablation(all_results: dict,
         writer.writerows(csv_rows)
     print(f"  CLAHE ablation results saved → {csv_path}")
 
+_log_file.close()
+sys.stdout = sys.__stdout__
+sys.stderr = sys.__stderr__
+print("Run log saved → outputs/run.log")
 
 run_clahe_ablation(all_results)

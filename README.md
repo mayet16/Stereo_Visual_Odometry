@@ -131,7 +131,7 @@ Mono RPE omitted for drift sequences — arbitrary scale makes it uninformative.
 
 ² Outdoors5 mono wins the drift metric but underscales the trajectory (estimated path ~456 m for
 a ~887 s outdoor walk; ORB+E init scale ≈ 0.103). Stereo has correct metric scale but accumulates
-heading drift from noisy disparity at outdoor distances (fB/d noise at 15 m ≈ 6 m/px). See Analysis section.
+heading drift from noisy disparity at outdoor distances (fB/d noise at 15 m ≈ 6 m). See Analysis section.
 
 Mono VO runs at **92–110 fps** (~4.6–5.5× real-time at 20 Hz).
 Stereo VO runs at **38–48 fps** (~1.9–2.4× real-time).
@@ -438,7 +438,7 @@ pip install numpy opencv-python scipy matplotlib pyyaml
 
 **1. Clone the repository**
 ```bash
-git clone https://github.com/<your-username>/Stereo_VO.git
+git clone https://github.com/mayet16/Stereo_Visual_Odometry.git
 cd Stereo_VO
 ```
 
@@ -494,7 +494,7 @@ _SHOW = True    # enable live feature and trajectory windows
 ```
 OS          : Ubuntu 22.04
 CPU         : Intel Core i7 (8 cores)
-RAM         : 16 GB
+RAM         : 32 GB
 Python      : 3.13.9
 OpenCV      : 4.13.0
 NumPy       : 2.3.5
@@ -727,6 +727,29 @@ Key findings:
 
 [13] J. Laconte, "Figures for Robotics Papers,"
      Online resource, INRAE MathNum, 2023.
+
+[14] E. Rublee, V. Rabaud, K. Konolige, and G. Bradski,
+     "ORB: An Efficient Alternative to SIFT or SURF,"
+     Proc. IEEE ICCV, pp. 2564–2571, 2011.
+
+[15] D. Nistér, "An Efficient Solution to the Five-Point Relative Pose Problem,"
+     IEEE Trans. Pattern Anal. Mach. Intell., vol. 26, no. 6, pp. 756–777, Jun. 2004.
+
+[16] B. D. Lucas and T. Kanade,
+     "An Iterative Image Registration Technique with an Application to Stereo Vision,"
+     Proc. DARPA Image Understanding Workshop, pp. 121–130, 1981.
+
+[17] H. Hirschmüller, "Stereo Processing by Semiglobal Matching and Mutual Information,"
+     IEEE Trans. Pattern Anal. Mach. Intell., vol. 30, no. 2, pp. 328–341, Feb. 2008.
+
+[18] N. Muhammad, D. Fofi, and S. Ainouz-Zemouche,
+     "Current State-of-the-Art of Vision-Based SLAM,"
+     Proc. IS&T/SPIE Electronic Imaging: Machine Vision Applications II,
+     San Jose, CA, USA, Jan. 2009.
+
+[19] C. Jiang, D. P. Paudel, Y. D. Fougerolle, D. Fofi, and C. Demonceaux,
+     "Static-Map and Dynamic Object Reconstruction in Outdoor Scenes Using 3-D Motion Segmentation,"
+     IEEE Robotics and Automation Letters, vol. 1, no. 1, pp. 324–331, 2016.
 
 ---
 
