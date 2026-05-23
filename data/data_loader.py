@@ -104,6 +104,7 @@ class StereoPair:
     P_right:     Optional[np.ndarray] = field(default=None, repr=False)
     Q:           Optional[np.ndarray] = field(default=None, repr=False)
     baseline:    float = 0.0
+    T_cam_imu:   Optional[np.ndarray] = field(default=None, repr=False)
 
     @property
     def T_cam0_cam1(self) -> np.ndarray:
@@ -189,12 +190,18 @@ def load_calibration(yaml_path: str) -> StereoPair:
     R_extr = T_cam1_cam0[:3, :3].copy()
     t_extr = T_cam1_cam0[:3,  3].copy()
 
+    T_cam_imu = None
+    if "T_cam_imu" in data.get("cam0", {}):
+        T_cam_imu = np.array(data["cam0"]["T_cam_imu"],
+                             dtype=np.float64).reshape(4, 4)
+
     pair = StereoPair(
         cam0        = cam0,
         cam1        = cam1,
         T_cam1_cam0 = T_cam1_cam0,
         R           = R_extr,
         t           = t_extr,
+        T_cam_imu   = T_cam_imu,
     )
     pair.compute_rectification()
     return pair
@@ -358,7 +365,13 @@ class TUMVILoader:
         left_ents   = self._read_image_csv(os.path.join(mav0, "cam0"))
         right_ents  = self._read_image_csv(os.path.join(mav0, "cam1")) \
                       if self.stereo else []
-        gt_poses    = _load_gt_poses(os.path.join(mav0, "mocap0", "data.csv"))
+        raw_gt      = _load_gt_poses(os.path.join(mav0, "mocap0", "data.csv"))
+
+        # mocap0/data.csv is T_world_body (IMU frame); convert to T_world_cam0
+        T_imu_cam0 = (np.linalg.inv(self.calib.T_cam_imu)
+                      if (self.calib is not None and self.calib.T_cam_imu is not None)
+                      else np.eye(4))
+        gt_poses = {ts: T @ T_imu_cam0 for ts, T in raw_gt.items()}
 
         right_ts    = np.array([e[0] for e in right_ents], dtype=np.int64) \
                       if right_ents else np.array([], dtype=np.int64)

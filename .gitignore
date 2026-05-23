@@ -19,6 +19,7 @@ dist/
 
 tumvi_dataset/
 reference papers/
+reports/other/
 
 # Data
 *.zip
